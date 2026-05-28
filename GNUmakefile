@@ -201,10 +201,11 @@ clean_md:
 clean_subs += clean_md
 endif
 
+# build depends for rpm spec file
+-include build_depends.mak
 # copr/fedora build (with version env vars)
 # copr uses this to generate a source rpm with the srpm target
 -include .copr/Makefile
-
 # debian build (debuild)
 # target for building installable deb: dist_dpkg
 -include deb/Makefile
@@ -549,6 +550,42 @@ $(bind)/subrv7test$(exe): $(subrv7test_objs) $(subrv7test_libs) $(lnk_dep)
 
 all_exes    += $(bind)/subrv7test$(exe)
 all_depends += $(subrv7test_deps)
+
+pubrv7test_files := pubrv7test
+pubrv7test_cfile := $(addprefix src/, $(addsuffix .cpp, $(pubrv7test_files)))
+pubrv7test_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(pubrv7test_files)))
+pubrv7test_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(pubrv7test_files)))
+pubrv7test_libs  := $(sassrv_lib) $(libd)/librv7ftlib.a $(libd)/librv7lib.a
+pubrv7test_lnk   := $(libd)/librv7ftlib.a $(libd)/librv7lib.a $(sassrv_lib) $(lnk_lib)
+
+$(bind)/pubrv7test$(exe): $(pubrv7test_objs) $(pubrv7test_libs) $(lnk_dep)
+
+all_exes    += $(bind)/pubrv7test$(exe)
+all_depends += $(pubrv7test_deps)
+
+#rvfieldid_files := rvfieldid
+#rvfieldid_cfile := $(addprefix src/, $(addsuffix .cpp, $(rvfieldid_files)))
+#rvfieldid_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(rvfieldid_files)))
+#rvfieldid_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(rvfieldid_files)))
+#rvfieldid_libs  := $(sassrv_lib) $(libd)/librv7ftlib.a $(libd)/librv7lib.a
+#rvfieldid_lnk   := $(libd)/librv7ftlib.a $(libd)/librv7lib.a $(sassrv_lib) $(lnk_lib)
+#
+#$(bind)/rvfieldid$(exe): $(rvfieldid_objs) $(rvfieldid_libs) $(lnk_dep)
+#
+#all_exes    += $(bind)/rvfieldid$(exe)
+#all_depends += $(rvfieldid_deps)
+#
+#processtransport_2_files := processtransport_2
+#processtransport_2_cfile := $(addprefix src/, $(addsuffix .cpp, $(processtransport_2_files)))
+#processtransport_2_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(processtransport_2_files)))
+#processtransport_2_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(processtransport_2_files)))
+#processtransport_2_libs  := $(sassrv_lib) $(libd)/librv7ftlib.a $(libd)/librv7lib.a
+#processtransport_2_lnk   := $(libd)/librv7ftlib.a $(libd)/librv7lib.a $(sassrv_lib) $(lnk_lib)
+#
+#$(bind)/processtransport_2$(exe): $(processtransport_2_objs) $(processtransport_2_libs) $(lnk_dep)
+#
+#all_exes    += $(bind)/processtransport_2$(exe)
+#all_depends += $(processtransport_2_deps)
 
 all_dirs := $(bind) $(libd) $(objd) $(dependd)
 
