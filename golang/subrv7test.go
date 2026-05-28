@@ -257,7 +257,7 @@ func main() {
 	closures = make([]*ClosureData, len(subjects))
 
 	for i, subject := range subjects {
-		fmt.Printf("tibrvlisten: Listening to subject %s\n", subject)
+		fmt.Printf("subrv7test.go: Listening to subject %s\n", subject)
 
 		// Create closure for this subject
 		closures[i] = &ClosureData{
