@@ -592,6 +592,16 @@ Tibrv_API::Open( void ) noexcept
   ::memcpy( t->x.session, t->client.session, sizeof( t->x.session ) );
   t->x.session_len = t->client.session_len;
 
+  kv::RoutePublish & sub_route = t->client.sub_route;
+  PatternCvt cvt;
+  const char * ibx = "_INBOX.>";
+  size_t       len = ::strlen( ibx );
+  cvt.convert_rv( ibx, len );
+  uint32_t h = kv_crc_c( ibx, cvt.prefixlen,
+                         sub_route.prefix_seed( cvt.prefixlen ) );
+  NotifyPattern npat( cvt, ibx, len, NULL, 0, h, false, 'A', *t );
+  sub_route.add_pat( npat );
+
   pthread_t id;
   pthread_attr_t attr;
   pthread_attr_init( &attr );
@@ -653,12 +663,26 @@ EvPipe::subscribe( EvPipeRec &rec ) noexcept
 {
   const char * sub = rec.l->subject;
   size_t       len = rec.l->len;
+
   if ( rec.t->id != TIBRV_PROCESS_TRANSPORT )
     rec.t->client.subscribe( sub, len, NULL, 0 );
   else {
-    NotifySub nsub( sub, len, NULL, 0,
-                    kv_crc_c( sub, len, 0 ), false, 'A', *rec.t );
-    rec.t->client.sub_route.add_sub( nsub );
+    kv::RoutePublish & sub_route = rec.t->client.sub_route;
+    if ( ! is_rv_wildcard( sub, len ) ) {
+      NotifySub nsub( sub, len, NULL, 0,
+                      kv_crc_c( sub, len, 0 ), false, 'A', *rec.t );
+      sub_route.add_sub( nsub );
+    }
+    else {
+      PatternCvt cvt;
+
+      if ( cvt.convert_rv( sub, len ) == 0 ) {
+        uint32_t h = kv_crc_c( sub, cvt.prefixlen,
+                               sub_route.prefix_seed( cvt.prefixlen ) );
+        NotifyPattern npat( cvt, sub, len, NULL, 0, h, false, 'A', *rec.t );
+        sub_route.add_pat( npat );
+      }
+    }
   }
 }
 
@@ -767,9 +791,22 @@ EvPipe::unsubscribe( EvPipeRec &rec ) noexcept
   if ( rec.t->id != TIBRV_PROCESS_TRANSPORT )
     rec.t->client.unsubscribe( rec.l->subject, rec.l->len );
   else {
-    NotifySub nsub( sub, len, NULL, 0,
-                    kv_crc_c( sub, len, 0 ), false, 'A', *rec.t );
-    rec.t->client.sub_route.del_sub( nsub );
+    kv::RoutePublish & sub_route = rec.t->client.sub_route;
+    if ( ! is_rv_wildcard( sub, len ) ) {
+      NotifySub nsub( sub, len, NULL, 0,
+                      kv_crc_c( sub, len, 0 ), false, 'A', *rec.t );
+      sub_route.del_sub( nsub );
+    }
+    else {
+      PatternCvt cvt;
+
+      if ( cvt.convert_rv( sub, len ) == 0 ) {
+        uint32_t h = kv_crc_c( sub, cvt.prefixlen,
+                               sub_route.prefix_seed( cvt.prefixlen ) );
+        NotifyPattern npat( cvt, sub, len, NULL, 0, h, false, 'A', *rec.t );
+        sub_route.del_pat( npat );
+      }
+    }
   }
 }
 
@@ -1700,7 +1737,7 @@ tibrv_SetRVParameters( tibrv_u32 /*argc*/, const char  ** /*argv*/ )
 tibrv_status
 tibrv_OpenEx( const char * /*pathname*/ )
 {
-  return TIBRV_OK;
+  return TIBRV_NOT_PERMITTED;
 }
 
 tibrv_bool

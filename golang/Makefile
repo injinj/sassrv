@@ -21,8 +21,7 @@ build_dir ?= $(short_dist)$(lsb_dist_ver)_$(uname_m)$(port_extra)
 .EXPORT_ALL_VARIABLES:
 
 # Build configuration
-PROGRAM = subrv7test
-SOURCE = subrv7test.go
+PROGRAMS = subrv7test pubrv7test
 
 # CGO configuration  
 CGO_CFLAGS = -I$(CURDIR)/../include -I$(CURDIR)/../../raimd/include -I$(CURDIR)/../../raikv/include -I$(CURDIR)/../../libdecnumber/include
@@ -33,14 +32,18 @@ CGO_LDFLAGS += -Wl,-rpath,$(CURDIR)/../$(build_dir)/lib64 -Wl,-rpath,$(CURDIR)/.
 CGO_LDFLAGS += -Wl,-rpath,$(CURDIR)/../../raikv/$(build_dir)/lib64 -Wl,-rpath,$(CURDIR)/../../libdecnumber/$(build_dir)/lib64 
 
 # Default target
-all: $(PROGRAM)
+all: $(PROGRAMS)
 
-# Build the program
-$(PROGRAM): $(SOURCE)
-	go build -o $(PROGRAM) $(SOURCE)
+# Build subrv7test
+subrv7test: subrv7test.go
+	go build -o subrv7test subrv7test.go
+
+# Build pubrv7test
+pubrv7test: pubrv7test.go
+	go build -o pubrv7test pubrv7test.go
 
 # Clean build artifacts
 clean:
-	rm -f $(PROGRAM)
+	rm -f $(PROGRAMS)
 
 .PHONY: all clean

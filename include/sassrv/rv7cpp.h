@@ -486,7 +486,8 @@ struct api_Msg {
                   rd_refs;
   bool            in_queue;
   MsgTether       tether;
-  uint64_t        serial;
+  uint64_t        serial,
+                  id_used;
   TibrvMsgRefList refs;
 
   void * operator new( size_t, void *ptr ) { return ptr; }
@@ -495,7 +496,7 @@ struct api_Msg {
     next( 0 ), back( 0 ), owner( 0 ), subject( 0 ), reply( 0 ), msg_data( 0 ),
     subject_len( 0 ), reply_len( 0 ), msg_enc( 0 ), msg_len( 0 ), event( ev ),
     rvmsg( 0 ), rd( 0 ), wr( this->mem, NULL, 0 ), cl( 0 ), wr_refs( 0 ),
-    rd_refs( 0 ), in_queue( false ), serial( 0 ) {}
+    rd_refs( 0 ), in_queue( false ), serial( 0 ), id_used( 0 ) {}
   ~api_Msg() noexcept;
   void release( void ) noexcept;
 
@@ -515,6 +516,7 @@ struct api_Msg {
     this->rd          = NULL;
     this->wr.buf      = NULL;
     this->wr.buflen   = 0;
+    this->id_used     = 0;
     this->release();
     this->wr.reset();
     this->mem.reuse();

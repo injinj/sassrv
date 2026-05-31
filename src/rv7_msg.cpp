@@ -323,6 +323,7 @@ tibrvMsg_CreateFromBytes( tibrvMsg * msg,  const void * bytes )
   tibrvMsg new_msg = * msg;
   api_Msg & x = *(api_Msg *) new_msg;
   x.wr.append_rvmsg( *m );
+  x.id_used = ~(uint64_t) 0;
   return TIBRV_OK;
 }
 
@@ -373,11 +374,16 @@ tibrvMsg_CreateCopy( const tibrvMsg msg,  tibrvMsg * copy )
     cp->msg_enc  = RVMSG_TYPE_ID;
     cp->msg_len  = m->msg_len;
     cp->msg_data = cp->mem.memalloc( m->msg_len, m->msg_data );
+    cp->id_used  = ~(uint64_t) 0;
   }
-  else if ( m->rvmsg != NULL )
+  else if ( m->rvmsg != NULL ) {
     cp->wr.append_rvmsg( *m->rvmsg );
-  else
+    cp->id_used = ~(uint64_t) 0;
+  }
+  else {
     cp->wr.append_writer( m->wr );
+    cp->id_used = m->id_used;
+  }
   *copy = cp;
   return TIBRV_OK;
 }
@@ -453,23 +459,6 @@ tibrvMsg_GetCurrentTimeString( char * local,  char * gmt )
 
 namespace {
 
-static inline size_t name_len( const char * name,  size_t add )
-  { return ( name == NULL ? 0 : ::strlen( name ) + 1 ) + add; }
-const char *fid_name( char *fbuf,  const char *name,  uint16_t id ) {
-  size_t len = name_len( name, 0 ); 
-  if ( len >= 255 - 2 )
-    len = 255 - 2;
-  ::memcpy( fbuf, name, len );
-  if ( len > 0 )
-    fbuf[ len - 1 ] = '\0';
-  fbuf[ len ] = (char) ( id >> 8 );
-  fbuf[ len + 1 ] = (char) ( id & 0xff );
-  return fbuf;
-}
-
-#define FNAME_ARG ( id == 0 ? name : fid_name( fbuf, name, id ) ), \
-                  name_len( name, id == 0 ? 0 : 2 )
-
 static inline RvMsgWriter &
 get_writer( tibrvMsg msg ) {
   api_Msg *m = ((api_Msg *) msg);
@@ -496,6 +485,70 @@ get_reader( tibrvMsg msg )
   return *m->rd;
 }
 
+static inline bool
+check_id( tibrvMsg msg,  tibrv_u16 id )
+{
+  bool used = false;
+  if ( id != 0 ) {
+    api_Msg * m = (api_Msg *) msg;
+    uint64_t bit = 1 << ( id % 64 );
+    used = ( m->id_used & bit ) != 0;
+    m->id_used |= bit;
+  }
+  return used;
+}
+
+struct FNameArg {
+  size_t        nm_len;
+  const char  * nm;
+  char          fbuf[ 256 ];
+
+  FNameArg( const char *name,  tibrv_u16 id ) {
+    this->nm_len = 0;
+    if ( name != NULL )
+      this->nm_len = ::strlen( name ) + 1;
+    if ( id == 0 )
+      this->nm = name;
+    else {
+      if ( this->nm_len >= 255 - 2 )
+        this->nm_len = 255 - 2;
+      ::memcpy( this->fbuf, name, this->nm_len );
+      if ( this->nm_len > 0 )
+        this->fbuf[ this->nm_len - 1 ] = '\0';
+      this->fbuf[ this->nm_len ] = (char) ( id >> 8 );
+      this->fbuf[ this->nm_len + 1 ] = (char) ( id & 0xff );
+      this->nm = this->fbuf;
+      this->nm_len += 2;
+    }
+  }
+};
+
+struct FNameAddArg : public FNameArg {
+  RvMsgWriter & wr;
+  bool update;
+  FNameAddArg( tibrvMsg msg,  const char *name,  tibrv_u16 id )
+      : FNameArg( name, id ), wr( get_writer( msg ) ),
+        update( check_id( msg, id ) ) {}
+};
+
+struct FNameRemoveArg : public FNameArg {
+  RvMsgWriter & wr;
+  FNameRemoveArg( tibrvMsg msg,  const char *name,  tibrv_u16 id )
+      : FNameArg( name, id ), wr( get_writer( msg ) ) {}
+};
+
+struct FNameUpdateArg : public FNameArg {
+  RvMsgWriter & wr;
+  FNameUpdateArg( tibrvMsg msg,  const char *name,  tibrv_u16 id )
+      : FNameArg( name, id ), wr( get_writer( msg ) ) {}
+};
+
+struct FNameGetArg : public FNameArg {
+  MDFieldReader & rd;
+  FNameGetArg( tibrvMsg msg,  const char *name,  tibrv_u16 id )
+      : FNameArg( name, id ), rd( get_reader( msg ) ) {}
+};
+
 template<class T>
 static inline tibrv_status
 get_value( MDFieldReader &rd, T * value, MDType type )
@@ -512,10 +565,9 @@ static inline tibrv_status
 get_value( tibrvMsg msg, const char *name, T * value, tibrv_u16 id,
            MDType type )
 {
-  char fbuf[ 256 ];
-  MDFieldReader & rd = get_reader( msg );
-  if ( rd.find( FNAME_ARG ) )
-    return get_value( rd, value, type );
+  FNameGetArg arg( msg, name, id );
+  if ( arg.rd.find( arg.nm, arg.nm_len ) )
+    return get_value( arg.rd, value, type );
   return TIBRV_NOT_FOUND;
 }
 
@@ -533,11 +585,10 @@ get_string( MDFieldReader &rd, char ** value,  tibrv_u32 *len )
 static inline tibrv_status
 get_string( tibrvMsg msg, const char *name, char ** value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  MDFieldReader & rd = get_reader( msg );
+  FNameGetArg arg( msg, name, id );
   tibrv_u32 len;
-  if ( rd.find( FNAME_ARG ) )
-    return get_string( rd, value, &len );
+  if ( arg.rd.find( arg.nm, arg.nm_len ) )
+    return get_string( arg.rd, value, &len );
   return TIBRV_NOT_FOUND;
 }
 
@@ -556,10 +607,9 @@ static inline tibrv_status
 get_opaque( tibrvMsg msg, const char *name, void ** value, tibrv_u32 *len,
             tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  MDFieldReader & rd = get_reader( msg );
-  if ( rd.find( FNAME_ARG ) )
-    return get_opaque( rd, value, len );
+  FNameGetArg arg( msg, name, id );
+  if ( arg.rd.find( arg.nm, arg.nm_len ) )
+    return get_opaque( arg.rd, value, len );
   return TIBRV_NOT_FOUND;
 }
 
@@ -588,10 +638,9 @@ static inline tibrv_status
 get_array_value( tibrvMsg msg, const char *name, T ** value, tibrv_u16 id,
                  MDType type,  tibrv_u32 *count )
 {
-  char fbuf[ 256 ];
-  MDFieldReader & rd = get_reader( msg );
-  if ( rd.find( FNAME_ARG ) )
-    return get_array_value( rd, value, type, count );
+  FNameGetArg arg( msg, name, id );
+  if ( arg.rd.find( arg.nm, arg.nm_len ) )
+    return get_array_value( arg.rd, value, type, count );
   return TIBRV_NOT_FOUND;
 }
 
@@ -785,228 +834,282 @@ extern "C" {
 tibrv_status
 tibrvMsg_AddIPAddr32Ex( tibrvMsg msg,  const char * name,  tibrv_ipaddr32 value,  tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_ipdata( FNAME_ARG, value );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateIPAddr32Ex( msg, name, value, id );
+  arg.wr.append_ipdata( arg.nm, arg.nm_len, value );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddIPPort16Ex( tibrvMsg msg, const char * name, tibrv_ipport16 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_ipdata( FNAME_ARG, value );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateIPPort16Ex( msg, name, value, id );
+  arg.wr.append_ipdata( arg.nm, arg.nm_len, value );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddDateTimeEx( tibrvMsg msg, const char * name, const tibrvMsgDateTime * value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateDateTimeEx( msg, name, value, id );
   MDStamp stamp( (uint64_t) value->sec * 1000000ULL +
                  (uint64_t) value->nsec / 1000ULL, MD_RES_MICROSECS );
-  get_writer( msg ).append_stamp( FNAME_ARG, stamp );
+  arg.wr.append_stamp( arg.nm, arg.nm_len, stamp );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddBoolEx( tibrvMsg msg, const char * name, tibrv_bool value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateBoolEx( msg, name, value, id );
   uint8_t v = ( value ? 1 : 0 );
-  get_writer( msg ).append_type( FNAME_ARG, v, MD_BOOLEAN );
+  arg.wr.append_type( arg.nm, arg.nm_len, v, MD_BOOLEAN );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddI8Ex( tibrvMsg msg, const char * name, tibrv_i8 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_type( FNAME_ARG, value, MD_INT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateI8Ex( msg, name, value, id );
+  arg.wr.append_type( arg.nm, arg.nm_len, value, MD_INT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddI8ArrayEx( tibrvMsg msg, const char * name, const tibrv_i8 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_array_type( FNAME_ARG, array, num, MD_INT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateI8ArrayEx( msg, name, array, num, id );
+  arg.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_INT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddU8Ex( tibrvMsg msg, const char * name, tibrv_u8 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_type( FNAME_ARG, value, MD_UINT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateU8Ex( msg, name, value, id );
+  arg.wr.append_type( arg.nm, arg.nm_len, value, MD_UINT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddU8ArrayEx( tibrvMsg msg, const char * name, const tibrv_u8 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_array_type( FNAME_ARG, array, num, MD_UINT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateU8ArrayEx( msg, name, array, num, id );
+  arg.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_UINT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddI16Ex( tibrvMsg msg, const char * name, tibrv_i16 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_type( FNAME_ARG, value, MD_INT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateI16Ex( msg, name, value, id );
+  arg.wr.append_type( arg.nm, arg.nm_len, value, MD_INT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddI16ArrayEx( tibrvMsg msg, const char * name, const tibrv_i16 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_array_type( FNAME_ARG, array, num, MD_INT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateI16ArrayEx( msg, name, array, num, id );
+  arg.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_INT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddU16Ex( tibrvMsg msg, const char * name, tibrv_u16 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_type( FNAME_ARG, value, MD_UINT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateU16Ex( msg, name, value, id );
+  arg.wr.append_type( arg.nm, arg.nm_len, value, MD_UINT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddU16ArrayEx( tibrvMsg msg, const char * name, const tibrv_u16 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_array_type( FNAME_ARG, array, num, MD_UINT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateU16ArrayEx( msg, name, array, num, id );
+  arg.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_UINT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddI32Ex( tibrvMsg msg, const char * name, tibrv_i32 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_type( FNAME_ARG, value, MD_INT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateI32Ex( msg, name, value, id );
+  arg.wr.append_type( arg.nm, arg.nm_len, value, MD_INT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddI32ArrayEx( tibrvMsg msg, const char * name, const tibrv_i32 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_array_type( FNAME_ARG, array, num, MD_INT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateI32ArrayEx( msg, name, array, num, id );
+  arg.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_INT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddU32Ex( tibrvMsg msg, const char * name, tibrv_u32 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_type( FNAME_ARG, value, MD_UINT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateU32Ex( msg, name, value, id );
+  arg.wr.append_type( arg.nm, arg.nm_len, value, MD_UINT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddU32ArrayEx( tibrvMsg msg, const char * name, const tibrv_u32 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_array_type( FNAME_ARG, array, num, MD_UINT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateU32ArrayEx( msg, name, array, num, id );
+  arg.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_UINT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddI64Ex( tibrvMsg msg, const char * name, tibrv_i64 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_type( FNAME_ARG, value, MD_INT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateI64Ex( msg, name, value, id );
+  arg.wr.append_type( arg.nm, arg.nm_len, value, MD_INT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddI64ArrayEx( tibrvMsg msg, const char * name, const tibrv_i64 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_array_type( FNAME_ARG, array, num, MD_INT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateI64ArrayEx( msg, name, array, num, id );
+  arg.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_INT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddU64Ex( tibrvMsg msg, const char * name, tibrv_u64 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_type( FNAME_ARG, value, MD_UINT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateU64Ex( msg, name, value, id );
+  arg.wr.append_type( arg.nm, arg.nm_len, value, MD_UINT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddU64ArrayEx( tibrvMsg msg, const char * name, const tibrv_u64 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_array_type( FNAME_ARG, array, num, MD_UINT );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateU64ArrayEx( msg, name, array, num, id );
+  arg.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_UINT );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddF32Ex( tibrvMsg msg, const char * name, tibrv_f32 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_type( FNAME_ARG, value, MD_REAL );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateF32Ex( msg, name, value, id );
+  arg.wr.append_type( arg.nm, arg.nm_len, value, MD_REAL );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddF32ArrayEx( tibrvMsg msg, const char * name, const tibrv_f32 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_array_type( FNAME_ARG, array, num, MD_REAL );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateF32ArrayEx( msg, name, array, num, id );
+  arg.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_REAL );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddF64Ex( tibrvMsg msg, const char * name, tibrv_f64 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_type( FNAME_ARG, value, MD_REAL );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateF64Ex( msg, name, value, id );
+  arg.wr.append_type( arg.nm, arg.nm_len, value, MD_REAL );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddF64ArrayEx( tibrvMsg msg, const char * name, const tibrv_f64 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_array_type( FNAME_ARG, array, num, MD_REAL );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateF64ArrayEx( msg, name, array, num, id );
+  arg.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_REAL );
   return TIBRV_OK;
 }
 
 tibrv_status
-tibrvMsg_AddStringArrayEx( tibrvMsg msg, const char * name, const char ** value, tibrv_u32 num, tibrv_u16 id )
+tibrvMsg_AddStringArrayEx( tibrvMsg msg, const char * name, const char ** array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_string_array( FNAME_ARG, (char **) value, num, 0 );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateStringArrayEx( msg, name, array, num, id );
+  arg.wr.append_string_array( arg.nm, arg.nm_len, (char **) array, num, 0 );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddMsgEx( tibrvMsg msg, const char * name, tibrvMsg value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  RvMsgWriter & w = get_writer( msg );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateMsgEx( msg, name, value, id );
+  RvMsgWriter & w = arg.wr;
   RvMsgWriter & v = get_writer( value );
   RvMsgWriter submsg( w.mem(), NULL, 0 );
-  w.append_msg( FNAME_ARG, submsg );
+  w.append_msg( arg.nm, arg.nm_len, submsg );
   submsg.append_writer( v );
   w.update_hdr( submsg );
   return TIBRV_OK;
 }
 
 tibrv_status
-tibrvMsg_AddMsgArrayEx( tibrvMsg msg, const char * name, const tibrvMsg * value, tibrv_u32 num, tibrv_u16 id )
+tibrvMsg_AddMsgArrayEx( tibrvMsg msg, const char * name, const tibrvMsg * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  RvMsgWriter & w = get_writer( msg );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateMsgArrayEx( msg, name, array, num, id );
+  RvMsgWriter & w = arg.wr;
   size_t aroff;
-  w.append_msg_array( FNAME_ARG, aroff );
+  w.append_msg_array( arg.nm, arg.nm_len, aroff );
   for ( tibrv_u32 i = 0; i < num; i++ ) {
-    RvMsgWriter & v = get_writer( value[ i ] );
+    RvMsgWriter & v = get_writer( array[ i ] );
     RvMsgWriter submsg( w.mem(), NULL, 0 );
     w.append_msg_elem( submsg );
     submsg.append_writer( v );
@@ -1019,35 +1122,40 @@ tibrvMsg_AddMsgArrayEx( tibrvMsg msg, const char * name, const tibrvMsg * value,
 tibrv_status
 tibrvMsg_AddStringEx( tibrvMsg msg, const char * name, const char * value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateStringEx( msg, name, value, id );
   size_t len = ( value == NULL ? 0 : ::strlen( value ) + 1 );
-  get_writer( msg ).append_string( FNAME_ARG, value, len );
+  arg.wr.append_string( arg.nm, arg.nm_len, value, len );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddOpaqueEx( tibrvMsg msg, const char * name, const void * value, tibrv_u32 size, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_opaque( FNAME_ARG, value, size );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateOpaqueEx( msg, name, value, size, id );
+  arg.wr.append_opaque( arg.nm, arg.nm_len, value, size );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_AddXmlEx( tibrvMsg msg, const char * name, const void * value, tibrv_u32 size, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  get_writer( msg ).append_xml( FNAME_ARG, (const char *) value, size );
+  FNameAddArg arg( msg, name, id );
+  if ( arg.update )
+    return tibrvMsg_UpdateXmlEx( msg, name, value, size, id );
+  arg.wr.append_xml( arg.nm, arg.nm_len, (const char *) value, size );
   return TIBRV_OK;
 }
 
 tibrv_status
 tibrvMsg_GetFieldEx( tibrvMsg msg, const char * name, tibrvMsgField * field, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  MDFieldReader & rd = get_reader( msg );
-  if ( rd.find( FNAME_ARG ) )
-    return get_field( msg, rd, field );
+  FNameGetArg arg( msg, name, id );
+  if ( arg.rd.find( arg.nm, arg.nm_len ) )
+    return get_field( msg, arg.rd, field );
   return TIBRV_NOT_FOUND;
 }
 
@@ -1109,11 +1217,10 @@ tibrvMsg_RemoveFieldInstance( tibrvMsg msg,  const char * name, tibrv_u32 inst )
 tibrv_status
 tibrvMsg_GetMsgEx( tibrvMsg msg, const char * name, tibrvMsg * sub, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  MDFieldReader & rd = get_reader( msg );
+  FNameGetArg arg( msg, name, id );
   *sub = NULL;
-  if ( rd.find( FNAME_ARG ) )
-    return get_msg( msg, rd, sub );
+  if ( arg.rd.find( arg.nm, arg.nm_len ) )
+    return get_msg( msg, arg.rd, sub );
   return TIBRV_NOT_FOUND;
 }
 
@@ -1277,12 +1384,11 @@ tibrvMsg_GetStringArrayEx( tibrvMsg msg, const char * name, const char *** array
 tibrv_status
 tibrvMsg_GetMsgArrayEx( tibrvMsg msg, const char * name, const tibrvMsg ** array, tibrv_u32 *count, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  MDFieldReader & rd = get_reader( msg );
+  FNameGetArg arg( msg, name, id );
   *array = NULL;
   *count = 0;
-  if ( rd.find( FNAME_ARG ) )
-    return get_msg_array( msg, rd, (tibrvMsg **) array, count );
+  if ( arg.rd.find( arg.nm, arg.nm_len ) )
+    return get_msg_array( msg, arg.rd, (tibrvMsg **) array, count );
   return TIBRV_NOT_FOUND;
 }
 
@@ -1301,18 +1407,17 @@ tibrvMsg_GetOpaqueEx( tibrvMsg msg, const char * name, const void ** value, tibr
 tibrv_status
 tibrvMsg_GetXmlEx( tibrvMsg msg, const char * name, const void ** value, tibrv_u32*size, tibrv_u16 id)
 {
-  char fbuf[ 256 ];
-  MDFieldReader & rd = get_reader( msg );
-  if ( rd.find( FNAME_ARG ) )
-    return get_string( rd, (char **) value, size );
+  FNameGetArg arg( msg, name, id );
+  if ( arg.rd.find( arg.nm, arg.nm_len ) )
+    return get_string( arg.rd, (char **) value, size );
   return TIBRV_NOT_FOUND;
 }
 
 tibrv_status
-tibrvMsg_RemoveFieldEx( tibrvMsg msg, const char * name, tibrv_u16 id)
+tibrvMsg_RemoveFieldEx( tibrvMsg msg, const char * name, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
+  FNameRemoveArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
   g.fin();
   return TIBRV_OK;
 }
@@ -1320,11 +1425,11 @@ tibrvMsg_RemoveFieldEx( tibrvMsg msg, const char * name, tibrv_u16 id)
 tibrv_status
 tibrvMsg_UpdateMsgEx( tibrvMsg msg, const char * name, tibrvMsg value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
   RvMsgWriter & v = get_writer( value );
   RvMsgWriter submsg( g.wr.mem(), NULL, 0 );
-  g.wr.append_msg( FNAME_ARG, submsg );
+  g.wr.append_msg( arg.nm, arg.nm_len, submsg );
   submsg.append_writer( v );
   g.wr.update_hdr( submsg );
   g.fin();
@@ -1334,9 +1439,9 @@ tibrvMsg_UpdateMsgEx( tibrvMsg msg, const char * name, tibrvMsg value, tibrv_u16
 tibrv_status
 tibrvMsg_UpdateIPAddr32Ex( tibrvMsg msg, const char * name, tibrv_ipaddr32 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_ipdata( FNAME_ARG, value );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_ipdata( arg.nm, arg.nm_len, value );
   g.fin();
   return TIBRV_OK;
 }
@@ -1344,9 +1449,9 @@ tibrvMsg_UpdateIPAddr32Ex( tibrvMsg msg, const char * name, tibrv_ipaddr32 value
 tibrv_status
 tibrvMsg_UpdateIPPort16Ex( tibrvMsg msg, const char * name, tibrv_ipport16 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_ipdata( FNAME_ARG, value );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_ipdata( arg.nm, arg.nm_len, value );
   g.fin();
   return TIBRV_OK;
 }
@@ -1354,11 +1459,11 @@ tibrvMsg_UpdateIPPort16Ex( tibrvMsg msg, const char * name, tibrv_ipport16 value
 tibrv_status
 tibrvMsg_UpdateDateTimeEx( tibrvMsg msg, const char * name, const tibrvMsgDateTime * value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
+  FNameUpdateArg arg( msg, name, id );
   MDStamp stamp( (uint64_t) value->sec * 1000000ULL +
                  (uint64_t) value->nsec / 1000ULL, MD_RES_MICROSECS );
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_stamp( FNAME_ARG, stamp );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_stamp( arg.nm, arg.nm_len, stamp );
   g.fin();
   return TIBRV_OK;
 }
@@ -1366,10 +1471,10 @@ tibrvMsg_UpdateDateTimeEx( tibrvMsg msg, const char * name, const tibrvMsgDateTi
 tibrv_status
 tibrvMsg_UpdateBoolEx( tibrvMsg msg, const char * name, tibrv_bool value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
   uint8_t v = ( value ? 1 : 0 );
-  g.wr.append_type( FNAME_ARG, v, MD_BOOLEAN );
+  g.wr.append_type( arg.nm, arg.nm_len, v, MD_BOOLEAN );
   g.fin();
   return TIBRV_OK;
 }
@@ -1377,9 +1482,9 @@ tibrvMsg_UpdateBoolEx( tibrvMsg msg, const char * name, tibrv_bool value, tibrv_
 tibrv_status
 tibrvMsg_UpdateI8Ex( tibrvMsg msg, const char * name, tibrv_i8 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_type( FNAME_ARG, value, MD_INT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_type( arg.nm, arg.nm_len, value, MD_INT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1387,9 +1492,9 @@ tibrvMsg_UpdateI8Ex( tibrvMsg msg, const char * name, tibrv_i8 value, tibrv_u16 
 tibrv_status
 tibrvMsg_UpdateI8ArrayEx( tibrvMsg msg, const char * name, const tibrv_i8 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_array_type( FNAME_ARG, array, num, MD_INT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_INT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1397,9 +1502,9 @@ tibrvMsg_UpdateI8ArrayEx( tibrvMsg msg, const char * name, const tibrv_i8 * arra
 tibrv_status
 tibrvMsg_UpdateU8Ex( tibrvMsg msg, const char * name, tibrv_u8 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_type( FNAME_ARG, value, MD_UINT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_type( arg.nm, arg.nm_len, value, MD_UINT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1407,9 +1512,9 @@ tibrvMsg_UpdateU8Ex( tibrvMsg msg, const char * name, tibrv_u8 value, tibrv_u16 
 tibrv_status
 tibrvMsg_UpdateU8ArrayEx( tibrvMsg msg, const char * name, const tibrv_u8 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_array_type( FNAME_ARG, array, num, MD_UINT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_UINT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1417,9 +1522,9 @@ tibrvMsg_UpdateU8ArrayEx( tibrvMsg msg, const char * name, const tibrv_u8 * arra
 tibrv_status
 tibrvMsg_UpdateI16Ex( tibrvMsg msg, const char * name, tibrv_i16 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_type( FNAME_ARG, value, MD_INT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_type( arg.nm, arg.nm_len, value, MD_INT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1427,9 +1532,9 @@ tibrvMsg_UpdateI16Ex( tibrvMsg msg, const char * name, tibrv_i16 value, tibrv_u1
 tibrv_status
 tibrvMsg_UpdateI16ArrayEx( tibrvMsg msg, const char * name, const tibrv_i16 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_array_type( FNAME_ARG, array, num, MD_INT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_INT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1437,9 +1542,9 @@ tibrvMsg_UpdateI16ArrayEx( tibrvMsg msg, const char * name, const tibrv_i16 * ar
 tibrv_status
 tibrvMsg_UpdateU16Ex( tibrvMsg msg, const char * name, tibrv_u16 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_type( FNAME_ARG, value, MD_UINT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_type( arg.nm, arg.nm_len, value, MD_UINT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1447,9 +1552,9 @@ tibrvMsg_UpdateU16Ex( tibrvMsg msg, const char * name, tibrv_u16 value, tibrv_u1
 tibrv_status
 tibrvMsg_UpdateU16ArrayEx( tibrvMsg msg, const char * name, const tibrv_u16 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_array_type( FNAME_ARG, array, num, MD_UINT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_UINT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1457,9 +1562,9 @@ tibrvMsg_UpdateU16ArrayEx( tibrvMsg msg, const char * name, const tibrv_u16 * ar
 tibrv_status
 tibrvMsg_UpdateI32Ex( tibrvMsg msg, const char * name, tibrv_i32 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_type( FNAME_ARG, value, MD_INT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_type( arg.nm, arg.nm_len, value, MD_INT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1467,9 +1572,9 @@ tibrvMsg_UpdateI32Ex( tibrvMsg msg, const char * name, tibrv_i32 value, tibrv_u1
 tibrv_status
 tibrvMsg_UpdateI32ArrayEx( tibrvMsg msg, const char * name, const tibrv_i32 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_array_type( FNAME_ARG, array, num, MD_INT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_INT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1477,9 +1582,9 @@ tibrvMsg_UpdateI32ArrayEx( tibrvMsg msg, const char * name, const tibrv_i32 * ar
 tibrv_status
 tibrvMsg_UpdateU32Ex( tibrvMsg msg, const char * name, tibrv_u32 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_type( FNAME_ARG, value, MD_UINT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_type( arg.nm, arg.nm_len, value, MD_UINT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1487,9 +1592,9 @@ tibrvMsg_UpdateU32Ex( tibrvMsg msg, const char * name, tibrv_u32 value, tibrv_u1
 tibrv_status
 tibrvMsg_UpdateU32ArrayEx( tibrvMsg msg, const char * name, const tibrv_u32 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_array_type( FNAME_ARG, array, num, MD_UINT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_UINT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1497,9 +1602,9 @@ tibrvMsg_UpdateU32ArrayEx( tibrvMsg msg, const char * name, const tibrv_u32 * ar
 tibrv_status
 tibrvMsg_UpdateI64Ex( tibrvMsg msg, const char * name, tibrv_i64 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_type( FNAME_ARG, value, MD_INT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_type( arg.nm, arg.nm_len, value, MD_INT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1507,9 +1612,9 @@ tibrvMsg_UpdateI64Ex( tibrvMsg msg, const char * name, tibrv_i64 value, tibrv_u1
 tibrv_status
 tibrvMsg_UpdateI64ArrayEx( tibrvMsg msg, const char * name, const tibrv_i64 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_array_type( FNAME_ARG, array, num, MD_INT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_INT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1517,9 +1622,9 @@ tibrvMsg_UpdateI64ArrayEx( tibrvMsg msg, const char * name, const tibrv_i64 * ar
 tibrv_status
 tibrvMsg_UpdateU64Ex( tibrvMsg msg, const char * name, tibrv_u64 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_type( FNAME_ARG, value, MD_UINT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_type( arg.nm, arg.nm_len, value, MD_UINT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1527,9 +1632,9 @@ tibrvMsg_UpdateU64Ex( tibrvMsg msg, const char * name, tibrv_u64 value, tibrv_u1
 tibrv_status
 tibrvMsg_UpdateU64ArrayEx( tibrvMsg msg, const char * name, const tibrv_u64 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_array_type( FNAME_ARG, array, num, MD_UINT );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_UINT );
   g.fin();
   return TIBRV_OK;
 }
@@ -1537,9 +1642,9 @@ tibrvMsg_UpdateU64ArrayEx( tibrvMsg msg, const char * name, const tibrv_u64 * ar
 tibrv_status
 tibrvMsg_UpdateF32Ex( tibrvMsg msg, const char * name, tibrv_f32 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_type( FNAME_ARG, value, MD_REAL );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_type( arg.nm, arg.nm_len, value, MD_REAL );
   g.fin();
   return TIBRV_OK;
 }
@@ -1547,9 +1652,9 @@ tibrvMsg_UpdateF32Ex( tibrvMsg msg, const char * name, tibrv_f32 value, tibrv_u1
 tibrv_status
 tibrvMsg_UpdateF32ArrayEx( tibrvMsg msg, const char * name, const tibrv_f32 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_array_type( FNAME_ARG, array, num, MD_REAL );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_REAL );
   g.fin();
   return TIBRV_OK;
 }
@@ -1557,9 +1662,9 @@ tibrvMsg_UpdateF32ArrayEx( tibrvMsg msg, const char * name, const tibrv_f32 * ar
 tibrv_status
 tibrvMsg_UpdateF64Ex( tibrvMsg msg, const char * name, tibrv_f64 value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_type( FNAME_ARG, value, MD_REAL );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_type( arg.nm, arg.nm_len, value, MD_REAL );
   g.fin();
   return TIBRV_OK;
 }
@@ -1567,9 +1672,9 @@ tibrvMsg_UpdateF64Ex( tibrvMsg msg, const char * name, tibrv_f64 value, tibrv_u1
 tibrv_status
 tibrvMsg_UpdateF64ArrayEx( tibrvMsg msg, const char * name, const tibrv_f64 * array, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_array_type( FNAME_ARG, array, num, MD_REAL );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_array_type( arg.nm, arg.nm_len, array, num, MD_REAL );
   g.fin();
   return TIBRV_OK;
 }
@@ -1577,9 +1682,9 @@ tibrvMsg_UpdateF64ArrayEx( tibrvMsg msg, const char * name, const tibrv_f64 * ar
 tibrv_status
 tibrvMsg_UpdateStringArrayEx( tibrvMsg msg, const char * name, const char ** value, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_string_array( FNAME_ARG, (char **) value, num, 0 );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_string_array( arg.nm, arg.nm_len, (char **) value, num, 0 );
   g.fin();
   return TIBRV_OK;
 }
@@ -1587,10 +1692,10 @@ tibrvMsg_UpdateStringArrayEx( tibrvMsg msg, const char * name, const char ** val
 tibrv_status
 tibrvMsg_UpdateMsgArrayEx( tibrvMsg msg, const char * name, const tibrvMsg * value, tibrv_u32 num, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
   size_t aroff;
-  g.wr.append_msg_array( FNAME_ARG, aroff );
+  g.wr.append_msg_array( arg.nm, arg.nm_len, aroff );
   for ( tibrv_u32 i = 0; i < num; i++ ) {
     RvMsgWriter & v = get_writer( value[ i ] );
     RvMsgWriter submsg( g.wr.mem(), NULL, 0 );
@@ -1606,10 +1711,10 @@ tibrvMsg_UpdateMsgArrayEx( tibrvMsg msg, const char * name, const tibrvMsg * val
 tibrv_status
 tibrvMsg_UpdateStringEx( tibrvMsg msg, const char * name, const char * value, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
   size_t len = ( value == NULL ? 0 : ::strlen( value ) + 1 );
-  g.wr.append_string( FNAME_ARG, value, len );
+  g.wr.append_string( arg.nm, arg.nm_len, value, len );
   g.fin();
   return TIBRV_OK;
 }
@@ -1617,9 +1722,9 @@ tibrvMsg_UpdateStringEx( tibrvMsg msg, const char * name, const char * value, ti
 tibrv_status
 tibrvMsg_UpdateOpaqueEx( tibrvMsg msg, const char * name, const void * value, tibrv_u32 size, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_opaque( FNAME_ARG, value, size );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_opaque( arg.nm, arg.nm_len, value, size );
   g.fin();
   return TIBRV_OK;
 }
@@ -1627,9 +1732,9 @@ tibrvMsg_UpdateOpaqueEx( tibrvMsg msg, const char * name, const void * value, ti
 tibrv_status
 tibrvMsg_UpdateXmlEx( tibrvMsg msg, const char * name, const void * value, tibrv_u32 size, tibrv_u16 id )
 {
-  char fbuf[ 256 ];
-  UpdGeom g( get_writer( msg ), FNAME_ARG );
-  g.wr.append_xml( FNAME_ARG, (const char *) value, size );
+  FNameUpdateArg arg( msg, name, id );
+  UpdGeom g( arg.wr, arg.nm, arg.nm_len );
+  g.wr.append_xml( arg.nm, arg.nm_len, (const char *) value, size );
   g.fin();
   return TIBRV_OK;
 }

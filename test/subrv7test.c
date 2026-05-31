@@ -101,7 +101,7 @@ dict_callback( tibrvEvent event, tibrvMsg message, void* closure )
 void
 usage( void )
 {
-  fprintf( stderr, "tibrvlisten [-service service] [-network network] \n" );
+  fprintf( stderr, "subrv7test [-service service] [-network network] \n" );
   fprintf( stderr, "            [-daemon daemon] subject_list\n" );
   exit( 1 );
 }
@@ -240,7 +240,7 @@ main( int argc, char** argv )
 
   for ( i = 0; i + currentArg < argc; i++ ) {
 
-    printf( "tibrvlisten: Listening to subject %s\n", argv[ i + currentArg ] );
+    printf( "subrv7test: Listening to subject %s\n", argv[ i + currentArg ] );
 
     err = tibrvTransport_CreateInbox( transport, inbox, sizeof( inbox ) );
     if ( err == TIBRV_OK ) {
