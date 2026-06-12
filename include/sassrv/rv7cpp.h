@@ -28,6 +28,7 @@ struct tibrv_Elem {
 struct EvPipe;
 struct api_Queue;
 struct api_Transport;
+struct SendCtx;
 
 struct Tibrv_API {
   EvPoll          poll;
@@ -147,6 +148,10 @@ struct Tibrv_API {
   tibrv_status CreateTransport( tibrvTransport * tport, const char * service, const char * network, const char * daemon ) noexcept;
   tibrv_status Send( tibrvTransport tport, tibrvMsg msg ) noexcept;
   tibrv_status Sendv( tibrvTransport tport, tibrvMsg * vec, tibrv_u32 cnt ) noexcept;
+  tibrv_status Flush( tibrvTransport tport ) noexcept;
+  SendCtx * get_send_ctx( api_Transport * t ) noexcept;
+  tibrv_status flush_send_ctx( SendCtx * c ) noexcept;
+  void free_transport_writers( api_Transport * t ) noexcept;
   tibrv_status SendRequest( tibrvTransport tport, tibrvMsg msg, tibrvMsg * reply, tibrv_f64 idle_timeout ) noexcept;
   tibrv_status SendReply( tibrvTransport tport, tibrvMsg msg, tibrvMsg request_msg ) noexcept;
   tibrv_status DestroyTransport( tibrvTransport tport ) noexcept;
@@ -379,6 +384,30 @@ struct api_Rpc {
 
 typedef DLinkList< api_Rpc > TibrvRpcList;
 
+/* Per-thread, per-transport send accumulator for TIMER_BATCH mode.  The owning
+ * thread appends marshaled copies of each Send() here; the batch is shipped in
+ * one EvPipe round-trip (amortizing the synchronous send hand-off).  Each ctx
+ * is cached in thread-local storage for the owner's fast path AND linked into
+ * its transport's writers registry, so a foreign flusher (batch timer, explicit
+ * Flush, teardown) can reach it even though TLS is private to the owner. */
+struct SendCtx {
+  SendCtx       * next, * back;   /* api_Transport::writers registry links */
+  SendCtx       * tls_next;       /* this thread's chain of ctxs */
+  api_Transport * t;              /* owning transport */
+  uint64_t        gen;            /* bumped on recycle (future leak-bound) */
+  pthread_mutex_t lock;           /* guards append vs foreign flush */
+  EvPublish     * pubs;           /* contiguous batch (high-water, realloc) */
+  uint32_t        cnt, cap, bytes;/* entries used / allocated / pending bytes */
+  MDMsgMem        byte_mem;       /* stable copies of subject/reply/data */
+
+  void * operator new( size_t, void *ptr ) { return ptr; }
+  SendCtx( api_Transport * tp ) : next( 0 ), back( 0 ), tls_next( 0 ), t( tp ),
+    gen( 0 ), pubs( 0 ), cnt( 0 ), cap( 0 ), bytes( 0 ) {
+    pthread_mutex_init( &this->lock, NULL );
+  }
+};
+typedef DLinkList< SendCtx > SendCtxList;
+
 struct api_Transport : public EvConnectionNotify, public RvClientCB,
                        public kv::EvSocket {
   Tibrv_API     & api;
@@ -396,6 +425,8 @@ struct api_Transport : public EvConnectionNotify, public RvClientCB,
   char          * descr;
   pthread_mutex_t mutex;
   pthread_cond_t  cond;
+  SendCtxList     writers;         /* registered per-thread send accumulators */
+  pthread_mutex_t writers_mutex;
 
   struct TportReconnectArgs { /* saved state for reconnecting */
     char session[ 64 ];
@@ -418,6 +449,7 @@ struct api_Transport : public EvConnectionNotify, public RvClientCB,
     reconnect_active( false ), is_destroyed( false ) {
     pthread_mutex_init( &this->mutex, NULL );
     pthread_cond_init( &this->cond, NULL );
+    pthread_mutex_init( &this->writers_mutex, NULL );
   }
   virtual void on_connect( EvSocket &conn ) noexcept;
   virtual void on_shutdown( EvSocket &conn,  const char *err,

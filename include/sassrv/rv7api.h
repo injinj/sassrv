@@ -270,6 +270,7 @@ tibrv_status tibrvTransport_Create( tibrvTransport * tport, const char * service
                                     const char * network, const char * daemon );
 tibrv_status tibrvTransport_Send( tibrvTransport tport, tibrvMsg msg );
 tibrv_status tibrvTransport_Sendv( tibrvTransport tport, tibrvMsg * vec, tibrv_u32 len );
+tibrv_status tibrvTransport_Flush( tibrvTransport tport );
 tibrv_status tibrvTransport_SendRequest( tibrvTransport tport, tibrvMsg msg,
                                          tibrvMsg * reply, tibrv_f64 idle_timeout );
 tibrv_status tibrvTransport_SendReply( tibrvTransport tport, tibrvMsg msg, tibrvMsg request_msg );

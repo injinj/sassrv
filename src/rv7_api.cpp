@@ -1310,6 +1310,114 @@ EvPipe::close_tport( EvPipeRec &rec ) noexcept
     rec.t->client.idle_push( EV_CLOSE );
 }
 
+/* Head of the calling thread's chain of send accumulators (one per transport
+ * it has published on).  Only ever read/written by the owning thread, so no
+ * lock; the authoritative, foreign-reachable list is api_Transport::writers. */
+static thread_local SendCtx * tls_send_head = NULL;
+
+SendCtx *
+Tibrv_API::get_send_ctx( api_Transport * t ) noexcept
+{
+  for ( SendCtx * c = tls_send_head; c != NULL; c = c->tls_next )
+    if ( c->t == t )
+      return c;
+  SendCtx * c = new ( ::malloc( sizeof( SendCtx ) ) ) SendCtx( t );
+  pthread_mutex_lock( &t->writers_mutex );
+  t->writers.push_tl( c );
+  pthread_mutex_unlock( &t->writers_mutex );
+  c->tls_next   = tls_send_head;
+  tls_send_head = c;
+  return c;
+}
+
+/* Append a marshaled copy of m into c (caller holds c->lock). */
+static void
+send_ctx_append( SendCtx * c,  api_Transport * t,  api_Msg * m ) noexcept
+{
+  const void * data    = m->msg_data;
+  size_t       datalen = m->msg_len;
+  if ( datalen == 0 ) {
+    data    = m->wr.buf;
+    datalen = m->wr.update_hdr();
+  }
+  char * subj = (char *) c->byte_mem.make( m->subject_len + 1 );
+  ::memcpy( subj, m->subject, m->subject_len );
+  subj[ m->subject_len ] = 0;
+  const char * rep = NULL;
+  if ( m->reply_len > 0 ) {
+    char * r = (char *) c->byte_mem.make( m->reply_len + 1 );
+    ::memcpy( r, m->reply, m->reply_len );
+    r[ m->reply_len ] = 0;
+    rep = r;
+  }
+  void * d = c->byte_mem.make( datalen );
+  ::memcpy( d, data, datalen );
+  if ( c->cnt == c->cap ) {
+    uint32_t    ncap = c->cap ? c->cap * 2 : 64;
+    EvPublish * np   = (EvPublish *) ::malloc( ncap * sizeof( EvPublish ) );
+    if ( c->cnt > 0 )
+      ::memcpy( (void *) np, (void *) c->pubs, c->cnt * sizeof( EvPublish ) );
+    if ( c->pubs != NULL )
+      ::free( c->pubs );
+    c->pubs = np;
+    c->cap  = ncap;
+  }
+  new ( &c->pubs[ c->cnt++ ] )
+    EvPublish( subj, m->subject_len, rep, m->reply_len, d, datalen,
+               t->client.sub_route, *t->me, 0, RVMSG_TYPE_ID );
+  c->bytes += (uint32_t) datalen;
+}
+
+/* Ship the accumulated batch in a single EvPipe round-trip.  Synchronous on
+ * purpose: blocking here once per batch is the backpressure point. */
+tibrv_status
+Tibrv_API::flush_send_ctx( SendCtx * c ) noexcept
+{
+  pthread_mutex_lock( &c->lock );
+  if ( c->cnt > 0 ) {
+    EvPipeRec rec( OP_TPORT_SENDV, c->t, c->pubs, c->cnt, &c->t->mutex,
+                   &c->t->cond );
+    pthread_mutex_lock( &c->t->mutex );
+    this->ev_read->exec( rec );
+    pthread_mutex_unlock( &c->t->mutex );
+    c->cnt   = 0;
+    c->bytes = 0;
+    c->byte_mem.reuse();
+  }
+  pthread_mutex_unlock( &c->lock );
+  return TIBRV_OK;
+}
+
+/* Flush every registered writer of a transport (foreign flush path: explicit
+ * Flush, and reused by teardown). */
+tibrv_status
+Tibrv_API::Flush( tibrvTransport tport ) noexcept
+{
+  api_Transport * t = this->get<api_Transport>( tport, TIBRV_TRANSPORT );
+  if ( t == NULL )
+    return TIBRV_INVALID_TRANSPORT;
+  pthread_mutex_lock( &t->writers_mutex );
+  for ( SendCtx * c = t->writers.hd; c != NULL; c = c->next )
+    this->flush_send_ctx( c );
+  pthread_mutex_unlock( &t->writers_mutex );
+  return TIBRV_OK;
+}
+
+void
+Tibrv_API::free_transport_writers( api_Transport * t ) noexcept
+{
+  pthread_mutex_lock( &t->writers_mutex );
+  while ( ! t->writers.is_empty() ) {
+    SendCtx * c = t->writers.pop_hd();
+    this->flush_send_ctx( c );
+    if ( c->pubs != NULL )
+      ::free( c->pubs );
+    c->~SendCtx();
+    ::free( c );
+  }
+  pthread_mutex_unlock( &t->writers_mutex );
+}
+
 tibrv_status
 Tibrv_API::Send( tibrvTransport tport, tibrvMsg msg ) noexcept
 {
@@ -1317,6 +1425,17 @@ Tibrv_API::Send( tibrvTransport tport, tibrvMsg msg ) noexcept
   if ( t == NULL )
     return TIBRV_INVALID_TRANSPORT;
   api_Msg    * m       = (api_Msg *) msg;
+  if ( t->batch_mode == TIBRV_TRANSPORT_TIMER_BATCH &&
+       t->id != TIBRV_PROCESS_TRANSPORT ) {
+    SendCtx * c = this->get_send_ctx( t );
+    pthread_mutex_lock( &c->lock );
+    send_ctx_append( c, t, m );
+    bool do_flush = ( t->batch_size != 0 && c->bytes >= t->batch_size );
+    pthread_mutex_unlock( &c->lock );
+    if ( do_flush )
+      this->flush_send_ctx( c );
+    return TIBRV_OK;
+  }
   const void * data    = m->msg_data;
   size_t       datalen = m->msg_len;
   if ( datalen == 0 ) {
@@ -1473,6 +1592,7 @@ Tibrv_API::DestroyTransport( tibrvTransport tport ) noexcept
   if ( t == NULL )
     return TIBRV_INVALID_TRANSPORT;
 
+  this->free_transport_writers( t );
   pthread_mutex_lock( &t->mutex );
   EvPipeRec rec2( OP_CLOSE_TPORT, t, (EvRvClientParameters *) NULL,
                   &t->mutex, &t->cond );
@@ -1940,6 +2060,12 @@ tibrv_status
 tibrvTransport_Sendv( tibrvTransport tport, tibrvMsg * vec, tibrv_u32 cnt )
 {
   return tibrv_api->Sendv( tport, vec, cnt );
+}
+
+tibrv_status
+tibrvTransport_Flush( tibrvTransport tport )
+{
+  return tibrv_api->Flush( tport );
 }
 
 tibrv_status
