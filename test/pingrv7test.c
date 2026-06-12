@@ -318,7 +318,10 @@ usage( void )
     "  -prefix P      send-subject prefix (default \"_TIC.\", use \"\" for none)\n"
     "  -quiet         do not print a line per round trip\n"
     "  -batch N       rate mode: send N msgs per vectored Sendv (default 1)\n"
-    "  -libbatch B    rate mode: library TIMER_BATCH, flush every B bytes\n" );
+    "  -libbatch B    rate mode: library TIMER_BATCH, flush every B bytes\n"
+    "  -singlebatch B library SINGLE_BATCH: one shared buffer, inline flush on\n"
+    "                 E every B bytes (0=timer-only)\n"
+    "  -binterval S   SINGLE_BATCH flush-timer period in seconds (default 0)\n" );
   exit( 1 );
 }
 
@@ -328,7 +331,7 @@ get_InitParms( int argc, char * argv[], int min_parms, char ** serviceStr,
                double * rate, unsigned long * count, unsigned long * size,
                double * interval, double * timeout, const char ** prefix,
                int * quiet, unsigned long * batch, unsigned long * libbatch,
-               int * spin )
+               int * spin, unsigned long * singlebatch, double * binterval )
 {
   int i = 1;
 
@@ -381,6 +384,12 @@ get_InitParms( int argc, char * argv[], int min_parms, char ** serviceStr,
     else if ( strcmp( argv[ i ], "-spin" ) == 0 ) {
       *spin = 1; i += 1;
     }
+    else if ( strcmp( argv[ i ], "-singlebatch" ) == 0 && i + 2 <= argc ) {
+      *singlebatch = strtoul( argv[ i + 1 ], NULL, 10 ); i += 2;
+    }
+    else if ( strcmp( argv[ i ], "-binterval" ) == 0 && i + 2 <= argc ) {
+      *binterval = strtod( argv[ i + 1 ], NULL ); i += 2;
+    }
     else {
       usage();
     }
@@ -409,12 +418,14 @@ main( int argc, char ** argv )
   unsigned long  batch      = 1;
   unsigned long  libbatch   = 0;
   int            spin       = 0;
+  unsigned long  singlebatch = 0;
+  double         binterval  = 0.0;
   char *         progname   = argv[ 0 ];
 
   currentArg = get_InitParms( argc, argv, MIN_PARMS, &serviceStr, &networkStr,
                               &daemonStr, &reflect, &rate, &count, &size,
                               &interval, &timeout, &prefix, &quiet, &batch,
-                              &libbatch, &spin );
+                              &libbatch, &spin, &singlebatch, &binterval );
 
   if ( argc - currentArg < 2 ) {
     fprintf( stderr, "%s: need ping_subject and pong_subject\n", progname );
@@ -469,6 +480,17 @@ main( int argc, char ** argv )
     st.use_flush = 1;
     printf( "pingrv7test: library TIMER_BATCH, batch_size=%lu bytes\n",
             libbatch );
+  }
+  else if ( singlebatch > 0 || binterval > 0.0 ) {
+    /* Library SINGLE_BATCH: one shared buffer per transport, drained by an
+     * inline publish on the E thread (byte threshold + periodic flush timer). */
+    tibrvTransport_SetBatchMode( st.transport, TIBRV_TRANSPORT_SINGLE_BATCH );
+    tibrvTransport_SetBatchSize( st.transport, (tibrv_u32) singlebatch );
+    if ( binterval > 0.0 )
+      tibrvTransport_SetBatchInterval( st.transport, binterval );
+    st.use_flush = 1;
+    printf( "pingrv7test: library SINGLE_BATCH, batch_size=%lu bytes, "
+            "timer=%.4gs\n", singlebatch, binterval );
   }
 
   signal( SIGINT, on_signal );
