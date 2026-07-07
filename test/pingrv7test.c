@@ -41,11 +41,6 @@
  *   PSEQ  u64  monotonically increasing sequence number
  *   PTS   u64  send timestamp, nanoseconds from CLOCK_MONOTONIC
  *   PAD   opaque (optional) padding so message size can be controlled
- *
- * Subjects are published with a configurable prefix (default "_TIC.") to match
- * the SASS rv pub/sub convention used by pubrv7test/subrv7test (publishers send
- * to _TIC.<subj>, subscribers listen on the bare <subj>).  Use -prefix "" for
- * plain rvd subjects.
  */
 
 typedef struct {
@@ -305,7 +300,7 @@ usage( void )
   fprintf( stderr,
     "pingrv7test [-service service] [-network network] [-daemon daemon]\n"
     "            [-reflect | -active] [-rate N] [-count N] [-size N]\n"
-    "            [-interval S] [-timeout S] [-prefix P] [-quiet]\n"
+    "            [-interval S] [-timeout S] [-quiet]\n"
     "            ping_subject pong_subject\n"
     "\n"
     "  -reflect       responder: listen on ping_subject, echo to pong_subject\n"
@@ -315,7 +310,6 @@ usage( void )
     "  -size N        pad each message with N opaque bytes\n"
     "  -interval S    closed-loop seconds between pings (default 1.0)\n"
     "  -timeout S     closed-loop seconds to wait for a reply (default 2.0)\n"
-    "  -prefix P      send-subject prefix (default \"_TIC.\", use \"\" for none)\n"
     "  -quiet         do not print a line per round trip\n"
     "  -batch N       rate mode: send N msgs per vectored Sendv (default 1)\n"
     "  -libbatch B    rate mode: library TIMER_BATCH, flush every B bytes\n"
@@ -329,9 +323,9 @@ int
 get_InitParms( int argc, char * argv[], int min_parms, char ** serviceStr,
                char ** networkStr, char ** daemonStr, int * reflect,
                double * rate, unsigned long * count, unsigned long * size,
-               double * interval, double * timeout, const char ** prefix,
-               int * quiet, unsigned long * batch, unsigned long * libbatch,
-               int * spin, unsigned long * singlebatch, double * binterval )
+               double * interval, double * timeout, int * quiet,
+               unsigned long * batch, unsigned long * libbatch, int * spin,
+               unsigned long * singlebatch, double * binterval )
 {
   int i = 1;
 
@@ -368,9 +362,6 @@ get_InitParms( int argc, char * argv[], int min_parms, char ** serviceStr,
     }
     else if ( strcmp( argv[ i ], "-timeout" ) == 0 && i + 2 <= argc ) {
       *timeout = strtod( argv[ i + 1 ], NULL ); i += 2;
-    }
-    else if ( strcmp( argv[ i ], "-prefix" ) == 0 && i + 2 <= argc ) {
-      *prefix = argv[ i + 1 ]; i += 2;
     }
     else if ( strcmp( argv[ i ], "-quiet" ) == 0 ) {
       *quiet = 1; i += 1;
@@ -413,7 +404,6 @@ main( int argc, char ** argv )
   unsigned long  size       = 0;
   double         interval   = 1.0;
   double         timeout    = 2.0;
-  const char *   prefix     = "_TIC.";
   int            quiet      = 0;
   unsigned long  batch      = 1;
   unsigned long  libbatch   = 0;
@@ -424,7 +414,7 @@ main( int argc, char ** argv )
 
   currentArg = get_InitParms( argc, argv, MIN_PARMS, &serviceStr, &networkStr,
                               &daemonStr, &reflect, &rate, &count, &size,
-                              &interval, &timeout, &prefix, &quiet, &batch,
+                              &interval, &timeout, &quiet, &batch,
                               &libbatch, &spin, &singlebatch, &binterval );
 
   if ( argc - currentArg < 2 ) {
@@ -439,10 +429,8 @@ main( int argc, char ** argv )
   st.quiet        = quiet;
   st.batch        = ( batch < 1 ? 1 : batch );
 
-  snprintf( st.ping_send, sizeof( st.ping_send ), "%s%s", prefix,
-            st.ping_subject );
-  snprintf( st.pong_send, sizeof( st.pong_send ), "%s%s", prefix,
-            st.pong_subject );
+  snprintf( st.ping_send, sizeof( st.ping_send ), "%s%s", "", st.ping_subject );
+  snprintf( st.pong_send, sizeof( st.pong_send ), "%s%s", "", st.pong_subject );
 
   if ( size > 0 ) {
     if ( size > 0x100000 )

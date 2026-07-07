@@ -438,10 +438,12 @@ struct api_Transport : public EvConnectionNotify, public RvClientCB,
    * target; sb_spare is the idle (empty) buffer the E-thread swaps in. */
   SendCtx       * sb_fill, * sb_spare;
   pthread_mutex_t sb_lock;          /* guards owner append vs E-thread swap */
-  bool            sb_pending;       /* an OP_TPORT_DRAIN is already in flight */
   tibrv_f64       batch_ival;       /* batch-timer period in seconds (0=off) */
   api_BatchTimer* sb_timer;         /* EvTimerCallback fired on E */
-  bool            sb_timer_active;
+  bool            sb_pending,       /* an OP_TPORT_DRAIN is already in flight */
+                  sb_timer_active,
+                  reconnect_active,
+                  is_destroyed;
 
   struct TportReconnectArgs { /* saved state for reconnecting */
     char session[ 64 ];
@@ -451,8 +453,6 @@ struct api_Transport : public EvConnectionNotify, public RvClientCB,
       : service( 0 ), network( 0 ), daemon( 0 ), session_len( 0 ) {}
   };
   TportReconnectArgs x;
-  bool reconnect_active,
-       is_destroyed;
 
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { aligned_free( ptr ); }
@@ -461,9 +461,9 @@ struct api_Transport : public EvConnectionNotify, public RvClientCB,
     api( a ), client( a.poll ), me( &this->client ), wild_ht( 0 ), id( i ),
     inbox_count( 1 ), wait_limit( 0 ), batch_size( 0 ),
     batch_mode( TIBRV_TRANSPORT_DEFAULT_BATCH ), descr( 0 ),
-    reconnect_active( false ), is_destroyed( false ),
-    sb_fill( 0 ), sb_spare( 0 ), sb_pending( false ), batch_ival( 0 ),
-    sb_timer( 0 ), sb_timer_active( false ) {
+    sb_fill( 0 ), sb_spare( 0 ), batch_ival( 0 ),
+    sb_timer( 0 ), sb_pending( false ), sb_timer_active( false ),
+    reconnect_active( false ), is_destroyed( false ) {
     pthread_mutex_init( &this->mutex, NULL );
     pthread_cond_init( &this->cond, NULL );
     pthread_mutex_init( &this->writers_mutex, NULL );

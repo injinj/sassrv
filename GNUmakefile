@@ -561,6 +561,30 @@ $(bind)/pubrv7test$(exe): $(pubrv7test_objs) $(pubrv7test_libs) $(lnk_dep)
 all_exes    += $(bind)/pubrv7test$(exe)
 all_depends += $(pubrv7test_deps)
 
+pingrv7test_files := pingrv7test
+pingrv7test_cfile := $(addprefix src/, $(addsuffix .cpp, $(pingrv7test_files)))
+pingrv7test_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(pingrv7test_files)))
+pingrv7test_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(pingrv7test_files)))
+pingrv7test_libs  := $(sassrv_lib) $(libd)/librv7ftlib.a $(libd)/librv7lib.a
+pingrv7test_lnk   := $(libd)/librv7ftlib.a $(libd)/librv7lib.a $(sassrv_lib) $(lnk_lib)
+
+$(bind)/pingrv7test$(exe): $(pingrv7test_objs) $(pingrv7test_libs) $(lnk_dep)
+
+all_exes    += $(bind)/pingrv7test$(exe)
+all_depends += $(pingrv7test_deps)
+
+fanrv7test_files := fanrv7test
+fanrv7test_cfile := $(addprefix src/, $(addsuffix .cpp, $(fanrv7test_files)))
+fanrv7test_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(fanrv7test_files)))
+fanrv7test_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(fanrv7test_files)))
+fanrv7test_libs  := $(sassrv_lib) $(libd)/librv7ftlib.a $(libd)/librv7lib.a
+fanrv7test_lnk   := $(libd)/librv7ftlib.a $(libd)/librv7lib.a $(sassrv_lib) $(lnk_lib)
+
+$(bind)/fanrv7test$(exe): $(fanrv7test_objs) $(fanrv7test_libs) $(lnk_dep)
+
+all_exes    += $(bind)/fanrv7test$(exe)
+all_depends += $(fanrv7test_deps)
+
 #rvfieldid_files := rvfieldid
 #rvfieldid_cfile := $(addprefix src/, $(addsuffix .cpp, $(rvfieldid_files)))
 #rvfieldid_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(rvfieldid_files)))

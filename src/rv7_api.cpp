@@ -268,26 +268,29 @@ api_Transport::on_rv_msg( EvPublish &pub ) noexcept
       return true;
     }
   }
-  size_t i = pub.subj_hash & this->ht.mask;
-  for ( l = this->ht.ht[ i ].hd; l != NULL; l = l->next ) {
-    if ( l->hash != pub.subj_hash || l->wild != 0 ||
-         l->len != pub.subject_len ||
-         ::memcmp( l->subject, pub.subject, l->len ) != 0 )
-      continue;
-    api_Queue * q = this->api.get<api_Queue>( l->queue, TIBRV_QUEUE );
-    if ( q != NULL ) {
-      api_QueueGroup * g = NULL;
-      pthread_mutex_lock( &q->mutex );
-      if ( q->push( l->id, l->cb, l->vcb, l->cl,
-                    api_Msg::make( pub, rvmsg, &q->tether, l->id, l->cl ) ) ) {
-        if ( (g = q->grp) == NULL )
-          pthread_cond_broadcast( &q->cond );
-      }
-      pthread_mutex_unlock( &q->mutex );
-      if ( g != NULL ) {
-        pthread_mutex_lock( &g->mutex );
-        pthread_cond_broadcast( &g->cond );
-        pthread_mutex_unlock( &g->mutex );
+  size_t i;
+  if ( this->ht.ht != NULL ) {
+    i = pub.subj_hash & this->ht.mask;
+    for ( l = this->ht.ht[ i ].hd; l != NULL; l = l->next ) {
+      if ( l->hash != pub.subj_hash || l->wild != 0 ||
+           l->len != pub.subject_len ||
+           ::memcmp( l->subject, pub.subject, l->len ) != 0 )
+        continue;
+      api_Queue * q = this->api.get<api_Queue>( l->queue, TIBRV_QUEUE );
+      if ( q != NULL ) {
+        api_QueueGroup * g = NULL;
+        pthread_mutex_lock( &q->mutex );
+        if ( q->push( l->id, l->cb, l->vcb, l->cl,
+                      api_Msg::make( pub, rvmsg, &q->tether, l->id, l->cl ) ) ) {
+          if ( (g = q->grp) == NULL )
+            pthread_cond_broadcast( &q->cond );
+        }
+        pthread_mutex_unlock( &q->mutex );
+        if ( g != NULL ) {
+          pthread_mutex_lock( &g->mutex );
+          pthread_cond_broadcast( &g->cond );
+          pthread_mutex_unlock( &g->mutex );
+        }
       }
     }
   }
