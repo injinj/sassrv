@@ -42,6 +42,16 @@ type fieldSpec struct {
 	value string
 }
 
+// The four built-in default fields.  They are overridable: a -field whose
+// name matches one of these replaces the default in place rather than being
+// appended as an extra field (mirrors the C version's dedicated globals).
+var (
+	msgType   = fieldSpec{"MSG_TYPE", 'i', 2, "1"}
+	recType   = fieldSpec{"REC_TYPE", 'i', 2, "5009"}
+	seqNo     = fieldSpec{"SEQ_NO", 'i', 2, "0"}
+	recStatus = fieldSpec{"REC_STATUS", 'i', 2, "0"}
+)
+
 // fieldList implements flag.Value to collect repeated -field arguments.
 type fieldList []fieldSpec
 
@@ -54,7 +64,20 @@ func (fl *fieldList) Set(spec string) error {
 	if err != nil {
 		return err
 	}
-	*fl = append(*fl, f)
+	// Route known names to the dedicated default slots (override), the rest
+	// onto the extra-field list.
+	switch f.name {
+	case "MSG_TYPE":
+		msgType = f
+	case "REC_TYPE":
+		recType = f
+	case "SEQ_NO":
+		seqNo = f
+	case "REC_STATUS":
+		recStatus = f
+	default:
+		*fl = append(*fl, f)
+	}
 	return nil
 }
 
@@ -196,21 +219,9 @@ func applyField(msg C.tibrvMsg, f *fieldSpec) C.tibrv_status {
 // applyDefaultFields writes the historical built-in field set that the
 // original C and Go versions hard-coded.  Used only when no -field is given.
 func applyDefaultFields(msg C.tibrvMsg) C.tibrv_status {
-	type def struct {
-		name string
-		typ  byte
-		size int
-		val  string
-	}
-	defaults := []def{
-		{"MSG_TYPE", 'i', 2, "1"},
-		{"REC_TYPE", 'i', 2, "5009"},
-		{"SEQ_NO", 'i', 2, "1"},
-		{"REC_STATUS", 'i', 2, "0"},
-	}
-	for _, d := range defaults {
-		f := fieldSpec{name: d.name, typ: d.typ, size: d.size, value: d.val}
-		if err := applyField(msg, &f); err != C.TIBRV_OK {
+	defaults := []*fieldSpec{&msgType, &recType, &seqNo, &recStatus}
+	for _, f := range defaults {
+		if err := applyField(msg, f); err != C.TIBRV_OK {
 			return err
 		}
 	}
@@ -300,6 +311,7 @@ func main() {
 			C.free(unsafe.Pointer(pubSubjectC))
 			os.Exit(2)
 		}
+		C.tibrvMsg_Print(pubMsg)
 
 		err = C.tibrvTransport_Send(transport, pubMsg)
 		C.tibrvMsg_Destroy(pubMsg)

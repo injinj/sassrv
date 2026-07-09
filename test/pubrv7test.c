@@ -25,14 +25,18 @@ typedef struct {
   const char * value;  /* points into argv (the part after the ':') */
 } field_spec_t;
 
-static field_spec_t g_fields[ MAX_FIELDS ];
+static field_spec_t g_msg_type   = { "MSG_TYPE"  , 'i', 2,    "1" },
+                    g_rec_type   = { "REC_TYPE"  , 'i', 2, "5009" },
+                    g_seq_no     = { "SEQ_NO"    , 'i', 2,    "0" },
+                    g_rec_status = { "REC_STATUS", 'i', 2,    "0" },
+                    g_fields[ MAX_FIELDS ];
 static int          g_field_count = 0;
 
 /* Backing storage for parsed field specs.  parse_field_spec needs a
  * mutable buffer to insert '\0' separators; we copy each argv string
  * here and point the field_spec_t members into our own buffer so the
  * argv strings are never modified. */
-static char         g_field_storage[ MAX_FIELDS ][ 1024 ];
+static char         g_field_storage[ MAX_FIELDS + 4 ][ 256 ];
 
 void
 usage( void )
@@ -194,10 +198,11 @@ static tibrv_status
 apply_default_fields( tibrvMsg msg )
 {
   tibrv_status err;
-  if ( ( err = tibrvMsg_AddI16( msg, "MSG_TYPE",   1 ) )        != TIBRV_OK ) return err;
-  if ( ( err = tibrvMsg_AddI16( msg, "REC_TYPE",   5009 ) )     != TIBRV_OK ) return err;
-  if ( ( err = tibrvMsg_AddI16( msg, "SEQ_NO",     0 ) )        != TIBRV_OK ) return err;
-  if ( ( err = tibrvMsg_AddI16( msg, "REC_STATUS", 0 ) )        != TIBRV_OK ) return err;
+  if ( (err = apply_field( msg, &g_msg_type   )) != TIBRV_OK ||
+       (err = apply_field( msg, &g_rec_type   )) != TIBRV_OK ||
+       (err = apply_field( msg, &g_seq_no     )) != TIBRV_OK ||
+       (err = apply_field( msg, &g_rec_status )) != TIBRV_OK )
+    return err;
   return TIBRV_OK;
 }
 
@@ -225,22 +230,44 @@ get_InitParms( int argc, char* argv[], int min_parms, char** serviceStr,
     }
     else if ( strcmp( argv[ i ], "-field" ) == 0 ) {
       size_t n;
+      field_spec_t * f;
+      char * s;
+
       if ( g_field_count >= MAX_FIELDS ) {
         fprintf( stderr, "too many -field arguments (max %d)\n", MAX_FIELDS );
         exit( 1 );
+      }
+      if ( memcmp( "MSG_TYPE=", argv[ i + 1 ], 9 ) == 0 ) {
+        f = &g_msg_type;
+        s = g_field_storage[ MAX_FIELDS ];
+      }
+      else if ( memcmp( "REC_TYPE=", argv[ i + 1 ], 9 ) == 0 ) {
+        f = &g_rec_type;
+        s = g_field_storage[ MAX_FIELDS + 1 ];
+      }
+      else if ( memcmp( "SEQ_NO=", argv[ i + 1 ], 7 ) == 0 ) {
+        f = &g_seq_no;
+        s = g_field_storage[ MAX_FIELDS + 2 ];
+      }
+      else if ( memcmp( "REC_STATUS=", argv[ i + 1 ], 11 ) == 0 ) {
+        f = &g_rec_status;
+        s = g_field_storage[ MAX_FIELDS + 3 ];
+      }
+      else {
+        f = &g_fields[ g_field_count ];
+        s = g_field_storage[ g_field_count ];
+        g_field_count++;
       }
       n = strlen( argv[ i + 1 ] );
       if ( n >= sizeof( g_field_storage[ 0 ] ) ) {
         fprintf( stderr, "-field spec too long: %s\n", argv[ i + 1 ] );
         exit( 1 );
       }
-      memcpy( g_field_storage[ g_field_count ], argv[ i + 1 ], n + 1 );
-      if ( parse_field_spec( g_field_storage[ g_field_count ],
-                             &g_fields[ g_field_count ] ) != 0 ) {
+      memcpy( s, argv[ i + 1 ], n + 1 );
+      if ( parse_field_spec( s, f ) != 0 ) {
         fprintf( stderr, "invalid -field spec: %s\n", argv[ i + 1 ] );
         usage();
       }
-      g_field_count++;
       i += 2;
     }
     else {
@@ -295,7 +322,7 @@ main( int argc, char** argv )
     printf( "pubrv7test: Publishing to subject %s\n", argv[ i + currentArg ] );
 
     tibrvMsg_Create( &pubMsg );
-    snprintf( pubSubject, sizeof( pubSubject ), "_TIC.%s", argv[ i + currentArg ] );
+    snprintf( pubSubject, sizeof( pubSubject ), "%s", argv[ i + currentArg ] );
     tibrvMsg_SetSendSubject( pubMsg, pubSubject );
 
     err = apply_default_fields( pubMsg );
@@ -315,6 +342,7 @@ main( int argc, char** argv )
       tibrvMsg_Destroy( pubMsg );
       exit( 2 );
     }
+    tibrvMsg_Print( pubMsg );
 
     err = tibrvTransport_Send( transport, pubMsg );
     tibrvMsg_Destroy( pubMsg );

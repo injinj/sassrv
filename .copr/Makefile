@@ -3,17 +3,23 @@ name   := sassrv
 spec   := rpm/$(name).spec
 date   := $(shell date +"%a %b %d %Y")
 rpmdir := $(shell pwd)
+# COPR's make_srpm mock chroot is minimal and ships WITHOUT git, so every
+# $(shell git ...) below fails "command not found" -> returns EMPTY -> srctree
+# collapses to just .git -> the tarball drops sources -> %build fails. Ensure
+# git exists at PARSE time, before the := assignments expand (a recipe-time
+# install is too late). No-op wherever git is already present (local builds).
+_ensure_git := $(shell command -v git >/dev/null 2>&1 || dnf -y install git-core >/dev/null 2>&1 || yum -y install git-core >/dev/null 2>&1)
 
 git_hash    := $(shell git rev-parse --short=8 HEAD)
 major_num   := 1
-minor_num   := 41
+minor_num   := 42
 patch_num   := 0
-build_num   := 79
+build_num   := 80
 version     := $(major_num).$(minor_num).$(patch_num)
 ver_build   := $(version)-$(build_num)
 name_ver    := $(name)-$(ver_build)
 rpm_src_dir := rpmbuild/SOURCES/$(name)-$(version)
-srctree     := .git src test include GNUmakefile .copr deb rpm
+srctree     := .git $(shell git ls-tree HEAD | awk '$$2 != "commit" { print $$4 }')
 release     := $(shell if [ -x /bin/rpmspec ] ; then \
                    /bin/rpmspec -q rpm/$(name).spec | head -1 | sed 's/.*999.999-99999.//' | sed 's/.src//' ; fi)
 -include build_depends.mak

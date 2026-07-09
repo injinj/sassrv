@@ -232,7 +232,9 @@ typedef enum {
 typedef enum
 {
   TIBRV_TRANSPORT_DEFAULT_BATCH = 0,
-  TIBRV_TRANSPORT_TIMER_BATCH   = 1
+  TIBRV_TRANSPORT_TIMER_BATCH   = 1, /* per-thread accumulator, pipe-RPC flush */
+  TIBRV_TRANSPORT_SINGLE_BATCH  = 2  /* one shared buffer, inline flush on E +
+                                        periodic batch timer (coalescing) */
 } tibrvTransportBatchMode;
 
 #define TIBRVQUEUE_DEFAULT_POLICY TIBRVQUEUE_DISCARD_NONE
@@ -270,6 +272,7 @@ tibrv_status tibrvTransport_Create( tibrvTransport * tport, const char * service
                                     const char * network, const char * daemon );
 tibrv_status tibrvTransport_Send( tibrvTransport tport, tibrvMsg msg );
 tibrv_status tibrvTransport_Sendv( tibrvTransport tport, tibrvMsg * vec, tibrv_u32 len );
+tibrv_status tibrvTransport_Flush( tibrvTransport tport );
 tibrv_status tibrvTransport_SendRequest( tibrvTransport tport, tibrvMsg msg,
                                          tibrvMsg * reply, tibrv_f64 idle_timeout );
 tibrv_status tibrvTransport_SendReply( tibrvTransport tport, tibrvMsg msg, tibrvMsg request_msg );
@@ -284,6 +287,7 @@ tibrv_status tibrvTransport_SetSendingWaitLimit( tibrvTransport tport, tibrv_u32
 tibrv_status tibrvTransport_GetSendingWaitLimit( tibrvTransport tport, tibrv_u32 * num_bytes );
 tibrv_status tibrvTransport_SetBatchMode( tibrvTransport tport, tibrvTransportBatchMode mode );
 tibrv_status tibrvTransport_SetBatchSize( tibrvTransport tport, tibrv_u32 num_bytes );
+tibrv_status tibrvTransport_SetBatchInterval( tibrvTransport tport, tibrv_f64 secs );
 tibrv_status tibrvTransport_CreateLicensed( tibrvTransport * tport, const char * service,
                                             const char * network, const char * daemon, const char * );
 tibrv_status tibrvTransport_RequestReliability( tibrvTransport tport, tibrv_f64 reliability );
