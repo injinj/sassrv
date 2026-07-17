@@ -13,6 +13,7 @@
 #include <sassrv/ev_rv_client.h>
 #include <sassrv/submgr.h>
 #include <raikv/ev_publish.h>
+#include <raimd/tib_msg.h>
 
 using namespace rai;
 using namespace kv;
@@ -29,17 +30,21 @@ static const char host_status[]   = _RV_INFO_HOST_STATUS ".>",
                   session_stop[]  = _RV_INFO_SESSION_STOP ".>",
                   listen_start[]  = _RV_INFO_LISTEN_START ".>",
                   listen_stop[]   = _RV_INFO_LISTEN_STOP ".>",
-                  snap[]          = "_SNAP.>";
+                  unreachable[]   = _RV_INFO_UNREACHABLE_TPORT ".>",
+                  snap[]          = "_SNAP.>",
+                  sass[]          = "_SASS.>";
 enum SubKind {
   IS_HOST_STATUS   = 0,
   IS_HOST_START    = 1,
   IS_HOST_STOP     = 2,
-  IS_SESSION_START = 3,
-  IS_SESSION_STOP  = 4,
-  IS_LISTEN_START  = 5,
-  IS_LISTEN_STOP   = 6,
-  IS_SNAP          = 7,
-  MAX_SUB_KIND     = 8
+  IS_UNREACHABLE   = 3,
+  IS_SESSION_START = 4,
+  IS_SESSION_STOP  = 5,
+  IS_LISTEN_START  = 6,
+  IS_LISTEN_STOP   = 7,
+  IS_SNAP          = 8,
+  IS_SASS          = 9,
+  MAX_SUB_KIND     = 10
 };
 
 struct SubMatch {
@@ -52,11 +57,13 @@ static const SubMatch rv_info_sub[ MAX_SUB_KIND ] = {
 { host_status  , sizeof( host_status ) - 1  , IS_HOST_STATUS },
 { host_start   , sizeof( host_start ) - 1   , IS_HOST_START },
 { host_stop    , sizeof( host_stop ) - 1    , IS_HOST_STOP },
+{ unreachable  , sizeof( unreachable ) - 1  , IS_UNREACHABLE },
 { session_start, sizeof( session_start ) - 1, IS_SESSION_START },
 { session_stop , sizeof( session_stop ) - 1 , IS_SESSION_STOP },
 { listen_start , sizeof( listen_start ) - 1 , IS_LISTEN_START },
 { listen_stop  , sizeof( listen_stop ) - 1  , IS_LISTEN_STOP },
-{ snap         , sizeof( snap ) - 1         , IS_SNAP }
+{ snap         , sizeof( snap ) - 1         , IS_SNAP },
+{ sass         , sizeof( sass ) - 1         , IS_SASS }
 };
 
 static const SubMatch *
@@ -142,7 +149,8 @@ RvSubscriptionDB::RvSubscriptionDB( EvRvClient &c,
                 cur_mono( 0 ), next_session_ctr( 0 ), next_subject_ctr( 0 ),
                 soft_host_query( 0 ), first_free_host( 0 ), next_gc( 0 ),
                 host_inbox_base( 1000000 ), session_inbox_base( 1000 ),
-                is_subscribed( false ), is_all_subscribed( false ), mout( 0 )
+                is_subscribed( false ), is_all_subscribed( false ),
+                is_sass2( false ), is_sass3( false ), mout( 0 )
 {
 }
 
@@ -168,6 +176,10 @@ RvSubscriptionDB::release( void ) noexcept
       f.wild = NULL;
     }
   }
+  RvSass3Entry *s3;
+  while ( (s3 = this->sass3_list.pop_hd()) != NULL )
+    delete s3;
+  this->sass3_tab.release();
 
   this->host_tab.clear();
   this->session_tab.release();
@@ -188,6 +200,8 @@ RvSubscriptionDB::release( void ) noexcept
   this->sess_ht           = NULL;
   this->is_subscribed     = false;
   this->is_all_subscribed = false;
+  this->is_sass2          = false;
+  this->is_sass3          = false;
   this->subscriptions.reset();
   this->sessions.reset();
   this->subscriptions.reset();
@@ -208,6 +222,7 @@ RvSubscriptionDB::next_subject_id( void ) noexcept
 void RvSubscriptionListener::on_listen_start( Start & ) noexcept {}
 void RvSubscriptionListener::on_listen_stop ( Stop  & ) noexcept {}
 void RvSubscriptionListener::on_snapshot    ( Snap  & ) noexcept {}
+void RvSubscriptionListener::on_sass3       ( Sass3 & ) noexcept {}
 
 void
 RvSubscriptionDB::add_wildcard( const char *wildcard ) noexcept
@@ -244,7 +259,7 @@ RvSubscriptionDB::is_matched( const char *sub,  size_t sub_len ) noexcept
 }
 
 void
-RvSubscriptionDB::start_subscriptions( bool all ) noexcept
+RvSubscriptionDB::start_subscriptions( bool all,  bool s2,  bool s3 ) noexcept
 {
   if ( this->is_subscribed )
     return;
@@ -252,16 +267,20 @@ RvSubscriptionDB::start_subscriptions( bool all ) noexcept
   this->sess_ht           = kv::UIntHashTab::resize( NULL );
   this->is_subscribed     = true;
   this->is_all_subscribed = all;
+  this->is_sass2          = s2;
+  this->is_sass3          = s3;
   this->cur_mono          = this->client.poll.mono_ns / NS;
   this->next_gc           = this->cur_mono + 131;
   this->do_subscriptions( true );
 
-  RvHostEntry &host = this->host_ref( ntohl( this->client.ipaddr ),
-                                      this->client.cid, true );
-  host.state = RvHostEntry::RV_HOST_QUERY;
+  if ( s2 ) {
+    RvHostEntry &host = this->host_ref( ntohl( this->client.ipaddr ),
+                                        this->client.cid, true );
+    host.state = RvHostEntry::RV_HOST_QUERY;
 
-  this->session_start( host.host_id, this->client.cid, this->client.session,
-                       this->client.session_len, true );
+    this->session_start( host.host_id, this->client.cid, this->client.session,
+                         this->client.session_len, true, "self", 4 );
+  }
 }
 
 void
@@ -280,18 +299,32 @@ RvSubscriptionDB::do_subscriptions( bool is_subscribe ) noexcept
   for ( int i = 0; i < MAX_SUB_KIND; i++ ) {
     const SubMatch & match = rv_info_sub[ i ];
 
-    if ( ! this->is_all_subscribed &&
-         ( i == IS_LISTEN_START || i == IS_LISTEN_STOP || i == IS_SNAP ) ) {
-      for ( size_t j = 0; j < this->filters.count; j++ )
-        this->do_wild_subscription( this->filters.ptr[ j ], is_subscribe, i );
+    if ( this->is_sass3 && i == IS_SASS ) {
+      if ( this->is_all_subscribed ) {
+        char star[ 2 ]  = { '*', 0 };
+        struct Filter f = { star, 1 };
+        this->do_wild_subscription( f, is_subscribe, i );
+      }
+      else {
+        for ( size_t j = 0; j < this->filters.count; j++ )
+          this->do_wild_subscription( this->filters.ptr[ j ], is_subscribe, i );
+      }
     }
-    else {
-      if ( this->mout != NULL )
-        this->mout->printf( "%ssubscribe (%.*s)\n", un, match.len, match.sub );
-      if ( is_subscribe )
-        this->client.subscribe( match.sub, match.len );
-      else
-        this->client.unsubscribe( match.sub, match.len );
+    if ( this->is_sass2 && i != IS_SASS ) {
+      if ( ! this->is_all_subscribed &&
+              ( i == IS_LISTEN_START || i == IS_LISTEN_STOP ||
+                i == IS_SNAP ) ) {
+        for ( size_t j = 0; j < this->filters.count; j++ )
+          this->do_wild_subscription( this->filters.ptr[ j ], is_subscribe, i );
+      }
+      else {
+        if ( this->mout != NULL )
+          this->mout->printf( "%ssubscribe (%.*s)\n", un, match.len, match.sub);
+        if ( is_subscribe )
+          this->client.subscribe( match.sub, match.len );
+        else
+          this->client.unsubscribe( match.sub, match.len );
+      }
     }
   }
 }
@@ -303,10 +336,14 @@ RvSubscriptionDB::do_wild_subscription( Filter &f,  bool is_subscribe,
   const char     * un    = ( is_subscribe ? "" : "un" );
   const SubMatch & match = rv_info_sub[ k ];
   size_t           len   = f.wild_len + match.len;
-  CatMalloc        sub( len );
+  CatMalloc        sub( len + 5 );
 
+  /* LISTEN_START.FEED. */
   sub.b( match.sub, match.len - 1 ) /* strip '>' */
-     .b( f.wild, f.wild_len ).end();
+     .b( f.wild, f.wild_len );
+  if ( k == IS_SASS )
+    sub.s( ".SUB" );
+  sub.end();
 
   if ( this->mout != NULL )
     this->mout->printf( "%ssubscribe (%s)\n", un, sub.start );
@@ -468,10 +505,15 @@ RvSubscriptionDB::unsub_session( RvSessionEntry &sess ) noexcept
   for ( RvSubscription * sub = this->first_subject( sess, pos ); sub != NULL;
         sub = this->next_subject( sess, pos ) ) {
     bool coll = false;
+    if ( sess.has_daemon )
+      sub->ref7cnt = 0;
     if ( --sub->refcnt == 0 ) {
       this->subscriptions.active--;
       this->subscriptions.removed++;
       coll = ( this->sub_hash_count( sub->value, sub->len, sub->hash ) > 0 );
+    }
+    else if ( sub->ref7cnt == 1 && sub->refcnt == 1 ) {
+      this->query_rv7_session( sess.host_id );
     }
     if ( this->cb != NULL ) {
       RvSubscriptionListener::Stop op( sess, *sub, false, false, coll );
@@ -499,9 +541,9 @@ RvSubscriptionDB::host_exists( uint32_t host_id,  uint16_t cid ) noexcept
 
 void
 RvSubscriptionDB::session_start( uint32_t host_id,  uint16_t cid,
-                                 const char *session_name,
-                                 size_t session_len,
-                                 bool is_self ) noexcept
+                                 const char *session_name,  size_t session_len,
+                                 bool is_self,  const char *u,
+                                 size_t ulen ) noexcept
 {
   if ( this->mout != NULL )
     this->mout->printf( "> session start %08X %u %.*s\n", host_id, cid,
@@ -525,7 +567,8 @@ RvSubscriptionDB::session_start( uint32_t host_id,  uint16_t cid,
       this->rem_session( *host, *entry ); /* no stop session */
     }
   }
-  entry->start( host_id, cid, this->next_session_id(), this->cur_mono, true );
+  entry->start( host_id, cid, this->next_session_id(), this->cur_mono, true,
+                u, ulen );
   if ( old_state != RvSessionEntry::RV_SESSION_STOP ) {
     if ( entry->state != RvSessionEntry::RV_SESSION_CID ) {
       entry->state = RvSessionEntry::RV_SESSION_QUERY;
@@ -584,7 +627,8 @@ RvSubscriptionDB::session_ref( uint16_t cid,  const char *session_name,
   if ( loc.is_new || entry->state == RvSessionEntry::RV_SESSION_STOP ) {
     uint32_t      host_id = string_to_host_id( session_name );
     RvHostEntry & host = this->host_ref( host_id, cid, false );
-    entry->start( host_id, cid, this->next_session_id(), this->cur_mono, false);
+    entry->start( host_id, cid, this->next_session_id(), this->cur_mono, false,
+                  NULL, 0 );
     this->add_session( host, *entry );
   }
   entry->ref_mono = this->cur_mono;
@@ -650,6 +694,40 @@ RvSubscriptionDB::listen_ref( RvSessionEntry & session,  const char *sub,
   return *script;
 }
 
+bool
+RvSubscriptionDB::deref_subscription( RvSessionEntry &session,
+                                      RvSubscription &script,
+                                      bool &coll ) noexcept
+{
+  if ( ! session.rem_subject( script ) )
+    return false;
+  if ( script.refcnt == 0 ) {
+    this->subscriptions.active--;
+    this->subscriptions.removed++;
+    coll = ( this->sub_hash_count( script.value, script.len, script.hash ) > 0 );
+  }
+  else if ( script.refcnt == 1 && script.ref7cnt == 1 )
+    this->query_rv7_session( session.host_id );
+  return true;
+}
+
+void
+RvSubscriptionDB::query_rv7_session( uint32_t host_id ) noexcept
+{
+  RvSessionEntry * s = this->get_rv7_session( host_id );
+  if ( s != NULL ) {
+    if ( s->state != RvSessionEntry::RV_SESSION_SELF &&
+         s->state != RvSessionEntry::RV_SESSION_CID ) {
+      if ( s->state != RvSessionEntry::RV_SESSION_QUERY ) {
+        s->state = RvSessionEntry::RV_SESSION_QUERY;
+        if ( this->mout != NULL )
+          this->mout->printf( "> deref_query %.*s\n", (int) s->len,
+                              s->value );
+      }
+    }
+  }
+}
+
 RvSubscription &
 RvSubscriptionDB::listen_stop( RvSessionEntry &session,  const char *sub,
                                size_t sub_len,  bool &is_orphan,
@@ -667,16 +745,8 @@ RvSubscriptionDB::listen_stop( RvSessionEntry &session,  const char *sub,
   coll      = false;
 
   if ( script != NULL ) {
-    if ( session.rem_subject( *script ) ) {
-      if ( script->refcnt == 0 ) {
-        this->subscriptions.active--;
-        this->subscriptions.removed++;
-        coll = ( this->sub_hash_count( sub, sub_len, subj_hash ) > 0 );
-      }
-    }
-    else {
+    if ( ! this->deref_subscription( session, *script, coll ) )
       is_orphan = true;
-    }
   }
   else {
     script = this->sub_tab.insert( subj_hash, sub, sub_len, loc );
@@ -694,20 +764,70 @@ RvSubscriptionDB::listen_stop( RvSessionEntry &session,  const char *sub,
 }
 
 RvSubscription &
-RvSubscriptionDB::snapshot( const char *sub,  size_t sub_len ) noexcept
+RvSubscriptionDB::get_subscription( const char *sub,  size_t sub_len ) noexcept
 {
-  if ( this->mout != NULL )
-    this->mout->printf( "> snapshot %.*s\n", (int) sub_len, sub );
   RouteLoc         loc;
   uint32_t         subj_hash = kv_crc_c( sub, sub_len, 0 );
   RvSubscription * script;
 
-  script = this->sub_tab.find( subj_hash, sub, sub_len, loc );
-  if ( script == NULL ) {
-    script = this->sub_tab.insert( subj_hash, sub, sub_len, loc );
+  script = this->sub_tab.upsert( subj_hash, sub, sub_len, loc );
+  if ( loc.is_new )
     script->start( this->next_subject_id(), this->cur_mono );
-  }
   return *script;
+}
+
+RvSubscription &
+RvSubscriptionDB::snapshot( const char *sub,  size_t sub_len,
+                            const char *sess,  size_t sess_len,
+                            RvSessionEntry *&session ) noexcept
+{
+  if ( this->mout != NULL )
+    this->mout->printf( "> snapshot %.*s\n", (int) sub_len, sub );
+  RvSubscription & script = this->get_subscription( sub, sub_len );
+  session = this->get_session( sess, sess_len );
+  if ( session != NULL && script.refcnt != 0 && script.ref7cnt == 0 ) {
+    if ( session->state != RvSessionEntry::RV_SESSION_SELF &&
+         session->state != RvSessionEntry::RV_SESSION_CID ) {
+      if ( session->state != RvSessionEntry::RV_SESSION_QUERY ) {
+        session->state = RvSessionEntry::RV_SESSION_QUERY;
+        if ( this->mout != NULL )
+          this->mout->printf( "> snap_query %.*s\n", (int) sess_len,
+                              sess );
+      }
+    }
+  }
+  return script;
+}
+
+RvSessionEntry *
+RvSubscriptionDB::get_session( const char *sess,  size_t sess_len ) noexcept
+{
+  uint32_t         hash = kv_crc_c( sess, sess_len, 0 );
+  RouteLoc         loc;
+  RvSessionEntry * entry;
+
+  entry = this->session_tab.find( hash, sess, sess_len, loc );
+  if ( entry == NULL )
+    entry = this->get_rv7_session( string_to_host_id( sess ) );
+  return entry;
+}
+
+RvSessionEntry *
+RvSubscriptionDB::get_rv7_session( uint32_t host_id ) noexcept
+{
+  uint32_t i, h = hash_host_id( host_id, 0 );
+  size_t   pos;
+  if ( this->host_ht->find( h, pos, i ) ) {
+    RvHostEntry & host = this->host_tab.ptr[ i ];
+    if ( host.rv7_sess_id != 0 ) {
+      RvSessionEntry * s = this->get_session( host.rv7_sess_id );
+      if ( s != NULL ) {
+        if ( s->has_daemon )
+          return s;
+      }
+    }
+  }
+  return NULL;
 }
 
 RvSessionEntry *
@@ -860,40 +980,35 @@ RvSubscriptionDB::mark_subscriptions( RvSessionEntry &session ) noexcept
 void
 RvSubscriptionDB::stop_marked_subscriptions( RvSessionEntry &session ) noexcept
 {
-  RvSubscription * sub;
+  RvSubscription * script;
   size_t           pos;
   uint32_t         end_sub_hash[ 256 ],
                    end_sub_id[ 256 ];
   uint32_t         i = 0;
 
   for (;;) {
-    if ( (sub = this->first_subject( session, pos )) != NULL ) {
+    if ( (script = this->first_subject( session, pos )) != NULL ) {
       do {
-        if ( sub->ref_mono == 0 ) {
-          end_sub_hash[ i ] = sub->hash;
-          end_sub_id[ i ]   = sub->subject_id;
+        if ( script->ref_mono == 0 ) {
+          end_sub_hash[ i ] = script->hash;
+          end_sub_id[ i ]   = script->subject_id;
           if ( this->mout != NULL ) {
             this->mout->printf( "! sub %.*s, marked %.*s\n",
-                                sub->len, sub->value,
+                                script->len, script->value,
                                 session.len, session.value );
           }
           if ( ++i == 256 )
             break;
         }
-      } while ( (sub = this->next_subject( session, pos )) != NULL );
+      } while ( (script = this->next_subject( session, pos )) != NULL );
     }
     for ( uint32_t j = 0; j < i; j++ ) {
-      sub = this->get_subject( end_sub_id[ j ], end_sub_hash[ j ] );
-      if ( session.rem_subject( *sub ) ) {
-        bool coll = false;
-        if ( sub->refcnt == 0 ) {
-          this->subscriptions.active--;
-          this->subscriptions.removed++;
-          coll = ( this->sub_hash_count( sub->value, sub->len,
-                                         sub->hash ) > 0 );
-        }
+      script = this->get_subject( end_sub_id[ j ], end_sub_hash[ j ] );
+
+      bool coll = false;
+      if ( this->deref_subscription( session, *script, coll ) ) {
         if ( this->cb != NULL ) {
-          RvSubscriptionListener::Stop op( session, *sub, false, false, coll );
+          RvSubscriptionListener::Stop op( session, *script, false, false, coll );
           this->cb->on_listen_stop( op );
         }
       }
@@ -1006,6 +1121,27 @@ RvSubscriptionDB::process_events( void ) noexcept
 {
   this->cur_mono = this->client.poll.mono_ns / NS;
 
+  while ( ! this->sass3_list.is_empty() &&
+          this->sass3_list.hd->expired( this->cur_mono ) ) {
+    RvSass3Entry * entry = this->sass3_list.pop_hd();
+    this->sass3_tab.remove( *entry );
+
+    RvSubscription * sub =
+      this->get_subject( entry->subject_id, entry->subj_hash );
+    if ( sub != NULL && sub->refcnt > 0 ) {
+      sub->refcnt--;
+      if ( this->mout != NULL ) {
+        this->mout->printf( "> expire sass3 %.*s user=%s host=%s app=%s pid=%u\n",
+                   sub->len, sub->value, entry->user_id, entry->host,
+                   entry->app, entry->pid );
+      }
+      RvSubscriptionListener::Sass3
+        op( *entry, *sub, NULL, 0, S3_UNSUBSCRIBE, false, true );
+      this->cb->on_sass3( op );
+    }
+    delete entry;
+  }
+
   while ( this->soft_host_query > 0 ) {
     if ( this->soft_host_query < this->host_tab.count &&
          this->host_tab.ptr[
@@ -1020,8 +1156,10 @@ RvSubscriptionDB::process_events( void ) noexcept
   for ( uint32_t i = 0; i < this->host_tab.count; i++ ) {
     RvHostEntry & host = this->host_tab.ptr[ i ];
     uint32_t secs;
+
     if ( host.state == RvHostEntry::RV_HOST_STOP )
       continue;
+
     if ( (secs = host.check_query_needed( this->cur_mono )) > 0 ) {
       char buf[ 32 ];
       if ( this->mout != NULL ) {
@@ -1037,8 +1175,10 @@ RvSubscriptionDB::process_events( void ) noexcept
           this->mout->printf( "! status time %s\n", hms( sta, buf) );
       }
     }
+
     if ( host.state == RvHostEntry::RV_HOST_QUERY )
       this->send_host_query( i );
+
     if ( host.state < RvHostEntry::RV_HOST_QUERY && host.sess_ht != NULL ) {
       RvSessionEntry * entry;
       size_t           pos;
@@ -1071,6 +1211,75 @@ RvSubscriptionDB::process_pub( EvPublish &pub ) noexcept
                              (const char *) pub.reply, pub.reply_len );
 }
 
+static size_t
+inbox_session_len( const char *rep,  size_t replen )
+{
+  if ( replen > 7 ) {
+    rep = &rep[ 7 ]; /* _INBOX. */
+    replen -= 7;
+    while ( replen > 0 && rep[ replen - 1 ] != '.' )
+      replen--;
+    if ( replen > 0 && rep[ replen - 1 ] == '.' ) {
+      replen--;
+      return replen;
+    }
+  }
+  return 0;
+}
+
+RvSass3Entry &
+RvSubscriptionDB::sass3( RvSubscription &script,
+                         const char *u, size_t ulen,
+                         const char *h, size_t hlen,
+                         const char *a, size_t alen,
+                         uint32_t pid,  uint32_t flags ) noexcept
+{
+  RvSass3Key k;
+  RvSass3Entry * entry;
+  size_t pos;
+
+  k.subj_hash  = script.hash;
+  k.subject_id = script.subject_id;
+  k.pid        = pid;
+  k.user_id    = ulen != 0 ? u : "nobody";
+  k.host       = hlen != 0 ? h : "localhost";
+  k.app        = alen != 0 ? a : "unknown";
+
+  if ( this->sass3_tab.locate( k, pos ) ) {
+    entry = this->sass3_tab.tab[ pos ];
+    if ( flags == S3_SNAPSHOT )
+      return *entry;
+    this->sass3_list.pop( entry );
+  }
+  else {
+    entry = RvSass3Entry::create( k, this->cur_mono );
+    if ( flags == S3_SNAPSHOT || flags == S3_UNSUBSCRIBE ) {
+      entry->start_mono = 0;
+      entry->ref_mono   = 0;
+      entry->subject_id = 0;
+      this->sass3_list.push_hd( entry );
+      return *entry;
+    }
+    else if ( (flags & S3_RESUBSCRIBE) != 0 ) {
+      entry->start_mono = 0;
+    }
+    this->sass3_tab.insert( pos, entry );
+    script.refcnt++;
+  }
+  if ( flags == S3_UNSUBSCRIBE ) {
+    this->sass3_tab.remove_slot( pos );
+    entry->ref( 0 );
+    entry->subject_id = 0;
+    script.refcnt--;
+    this->sass3_list.push_hd( entry );
+  }
+  else {
+    entry->ref( this->cur_mono );
+    this->sass3_list.push_tl( entry );
+  }
+  return *entry;
+}
+
 bool
 RvSubscriptionDB::process_pub2( EvPublish &pub,  const char *subject,
                                 size_t subject_len,  const char *reply,
@@ -1095,9 +1304,12 @@ RvSubscriptionDB::process_pub2( EvPublish &pub,  const char *subject,
                         (int) subject_len, subject );
   }
   MDMsgMem mem;
-  RvMsg  * m = NULL;
+  MDMsg  * m = NULL;
   if ( pub.msg_len > 0 ) {
-    m = RvMsg::unpack_rv( (void *) pub.msg, 0, pub.msg_len, 0, NULL, mem );
+    if ( pub.msg_enc == TIBMSG_TYPE_ID )
+      m = TibMsg::unpack( (void *) pub.msg, 0, pub.msg_len, 0, NULL, mem );
+    else
+      m = RvMsg::unpack_rv( (void *) pub.msg, 0, pub.msg_len, 0, NULL, mem );
     if ( m != NULL ) {
       if ( this->mout != NULL ) {
         m->print( this->mout );
@@ -1124,11 +1336,20 @@ RvSubscriptionDB::process_pub2( EvPublish &pub,  const char *subject,
     uint32_t id = ( match->kind <= IS_SESSION_STOP ?
                     string_to_host_id( &subject[ match->len - 1 ] ) : 0 );
     char   * x     = NULL,
-           * s     = NULL;
+           * s     = NULL,
+           * u     = NULL,
+           * t     = NULL,
+           * h     = NULL,
+           * a     = NULL;
     size_t   xlen  = 0,
-             slen  = 0;
+             slen  = 0,
+             ulen  = 0,
+             tlen  = 0,
+             hlen  = 0,
+             alen  = 0;
     uint32_t idl   = 0,
-             odl   = 0;
+             odl   = 0,
+             pid   = 0;
     uint16_t flags = 0,
              cid   = 0;
 
@@ -1140,7 +1361,9 @@ RvSubscriptionDB::process_pub2( EvPublish &pub,  const char *subject,
       case IS_HOST_START   :
       case IS_HOST_STATUS  :
       case IS_HOST_STOP    :
-      case IS_SNAP         : {
+      case IS_UNREACHABLE  :
+      case IS_SNAP         :
+      case IS_SASS         : {
         if ( m == NULL )
           break;
         MDFieldReader rd( *m );
@@ -1148,6 +1371,70 @@ RvSubscriptionDB::process_pub2( EvPublish &pub,  const char *subject,
         if ( match->kind == IS_SNAP ) {
           if ( rd.find( "flags" ) ) 
             rd.get_uint( flags );
+        }
+        else if ( match->kind == IS_SASS ) {
+          if ( ! rd.find( "T" ) )
+            break;
+          rd.get_uint( flags );
+          if ( ( flags & S3_UNSUBSCRIBE ) != 0 )
+            flags = S3_UNSUBSCRIBE;
+          else if ( ( flags & S3_SNAPSHOT ) != 0 )
+            flags = S3_SNAPSHOT;
+          if ( ! rd.find( "A" ) )
+            break;
+          MDMsg * n;
+          if ( rd.get_sub_msg( n ) ) {
+            MDFieldReader rd( *n );
+            MDName nm;
+            for ( bool b = rd.first( nm ); b; b = rd.next( nm ) ) {
+              if ( nm.equals( "U", 1 ) )
+                rd.get_string( u, ulen );
+              else if ( nm.equals( "H", 1 ) )
+                rd.get_string( h, hlen );
+              else if ( nm.equals( "A", 1 ) )
+                rd.get_string( a, alen );
+              else if ( nm.equals( "P", 1 ) )
+                rd.get_uint( pid );
+            }
+          }
+          if ( rd.find( "S" ) ) {
+            MDMsg * x;
+            if ( rd.get_sub_msg( x ) ) {
+              MDFieldReader rd( *x );
+              MDName nm;
+              for ( bool b = rd.first( nm ); b; b = rd.next( nm ) ) {
+                if ( nm.fnamelen > 1 ) {
+                  RvSubscription & sub =
+                    this->get_subscription( nm.fname, nm.fnamelen - 1 );
+                  RvSass3Entry & script =
+                    this->sass3( sub, u, ulen, h, hlen, a, alen, pid, flags );
+                  uint16_t f = flags;
+                  bool is_asserted = false;
+                  if ( f == S3_RESUBSCRIBE ) {
+                    if ( script.start_mono != 0 )
+                      continue;
+                    script.start_mono = this->cur_mono;
+                    f |= S3_REFRESH;
+                    is_asserted = true;
+                  }
+                  bool is_orphan = false;
+                  if ( f == S3_UNSUBSCRIBE ) {
+                    if ( script.start_mono == 0 )
+                      is_orphan = true;
+                  }
+                  if ( this->mout != NULL ) {
+                    this->mout->printf( "> sass3 %.*s flags=%x user=%s host=%s app=%s pid=%u\n",
+                               sub.len, sub.value, flags, script.user_id, script.host,
+                               script.app, script.pid );
+                  }
+                  RvSubscriptionListener::Sass3
+                    op( script, sub, reply, reply_len, f, is_orphan,
+                        is_asserted );
+                  this->cb->on_sass3( op );
+                }
+              }
+            }
+          }
         }
         else if ( match->kind == IS_HOST_STATUS ||
                   match->kind == IS_HOST_START ||
@@ -1159,8 +1446,15 @@ RvSubscriptionDB::process_pub2( EvPublish &pub,  const char *subject,
           if ( rd.find( "cid" ) )
             rd.get_uint( cid );
         }
+        else if ( match->kind == IS_UNREACHABLE ) {
+          if ( rd.find( "tport" ) )
+            rd.get_string( t, tlen );
+        }
         /* get id: session-name, sub: subject */
         else {
+          if ( match->kind == IS_SESSION_START )
+            if ( rd.find( "userid" ) )
+              rd.get_string( u, ulen );
           if ( rd.find( "id" ) )
             rd.get_string( x, xlen );
           if ( match->kind == IS_LISTEN_START ||
@@ -1197,7 +1491,8 @@ RvSubscriptionDB::process_pub2( EvPublish &pub,  const char *subject,
       }
       case IS_HOST_START   : this->host_start( id, cid ); break;
       case IS_HOST_STOP    : this->host_stop( id, cid ); break;
-      case IS_SESSION_START: this->session_start( id, cid, x, xlen, false ); break;
+      case IS_UNREACHABLE  : this->query_rv7_session( id ); break;
+      case IS_SESSION_START: this->session_start( id, cid, x, xlen, false, u, ulen ); break;
       case IS_SESSION_STOP : this->session_stop( id, cid, x, xlen ); break;
       case IS_LISTEN_START : {
         RvSessionEntry & session  = this->session_ref( cid, x, xlen );
@@ -1231,11 +1526,24 @@ RvSubscriptionDB::process_pub2( EvPublish &pub,  const char *subject,
       /* _SNAP.<subject> = strip 6 char prefix */
       case IS_SNAP:
         if ( this->cb != NULL && subject_len > 6 ) {
+          RvSessionEntry *session;
           RvSubscription & script =
-            this->snapshot( &subject[ 6 ], subject_len - 6 );
-          RvSubscriptionListener::Snap
-            op( script, reply, reply_len, flags );
-          this->cb->on_snapshot( op );
+            this->snapshot( &subject[ 6 ], subject_len - 6, &reply[ 7 ],
+                            inbox_session_len( reply, reply_len ), session );
+          if ( session != NULL ) {
+            RvSubscriptionListener::Snap
+              op( script, *session, reply, reply_len, flags );
+            this->cb->on_snapshot( op );
+          }
+        }
+        break;
+
+      case IS_SASS:
+        while ( ! this->sass3_list.is_empty() &&
+                this->sass3_list.hd->subject_id == 0 &&
+                this->sass3_list.hd->ref_mono == 0 ) {
+          RvSass3Entry * entry  = this->sass3_list.pop_hd();
+          delete entry;
         }
         break;
 
@@ -1288,24 +1596,34 @@ RvSubscriptionDB::process_pub2( EvPublish &pub,  const char *subject,
            session->state == RvSessionEntry::RV_SESSION_QUERY ) {
         this->mark_subscriptions( *session );
         for ( bool b = rd.first( nm ); b; b = rd.next( nm ) ) {
-          char * sub    = NULL;
+          char * sub     = NULL;
           size_t sub_len = 0;
-          if ( nm.fnamelen == 0 && rd.get_string( sub, sub_len ) &&
-               this->is_matched( sub, sub_len ) ) {
-            bool is_added, coll;
-            RvSubscription & script = this->listen_ref( *session, sub, sub_len,
-                                                        is_added, coll );
-            if ( is_added ) {
-              if ( this->cb != NULL ) {
-                RvSubscriptionListener::Start
-                  op( *session, script, NULL, 0, false, coll );
-                this->cb->on_listen_start( op );
+          if ( nm.fnamelen != 0 ) {
+            if ( nm.equals( "user", 4 ) ) {
+              char * u    = NULL;
+              size_t ulen = 0;
+              rd.get_string( u, ulen );
+              session->add_user( u, ulen );
+            }
+          }
+          else {
+            if ( rd.get_string( sub, sub_len ) &&
+                 this->is_matched( sub, sub_len ) ) {
+              bool is_added, coll;
+              RvSubscription & script =
+                this->listen_ref( *session, sub, sub_len, is_added, coll );
+              if ( is_added ) {
+                if ( this->cb != NULL ) {
+                  RvSubscriptionListener::Start
+                    op( *session, script, NULL, 0, false, coll );
+                  this->cb->on_listen_start( op );
+                }
               }
             }
           }
         }
         session->state = RvSessionEntry::RV_SESSION_RV5;
-        if ( session->has_daemon() )
+        if ( session->has_daemon )
           session->state = RvSessionEntry::RV_SESSION_RV7;
         this->stop_marked_subscriptions( *session );
       }

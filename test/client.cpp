@@ -374,7 +374,7 @@ RvDataCallback::make_subject( size_t n,  const char *&s, size_t &slen,
   slen = this->subs.ptr[ j ].len;
 
   const char * p = ::strstr( s, "%d" );
-  if ( this->has_printf ) {
+  if ( this->has_printf || is_snap ) {
     if ( this->subj_buf == NULL || slen + 24 > 1024 ) {
       size_t len = ( slen + 24 < 1024 ? 1024 : slen + 24 );
       this->subj_buf = (char *) ::realloc( this->subj_buf, len );
@@ -384,7 +384,9 @@ RvDataCallback::make_subject( size_t n,  const char *&s, size_t &slen,
     if ( is_snap )
       cat.s( "_SNAP." );
     if ( p == NULL ) {
-      cat.x( s, e - s ).s( "." ).u( n );
+      cat.x( s, e - s );
+      if ( ! is_snap )
+        cat.s( "." ).u( n );
     }
     else {
       cat.x( s, p - s ).u( n );
@@ -1110,7 +1112,7 @@ main( int argc, char *argv[] )
   const char * daemon  = get_arg( x, argc, argv, 1, "-d", "-daemon", "tcp:7500" ),
              * network = get_arg( x, argc, argv, 1, "-n", "-network", ""),
              * service = get_arg( x, argc, argv, 1, "-s", "-service", "7500" ),
-             * user    = get_arg( x, argc, argv, 1, "-u", "-user", "rv_client" ),
+             * user    = get_arg( x, argc, argv, 1, "-u", "-user", NULL ),
              * path    = get_arg( x, argc, argv, 1, "-c", "-cfile", NULL ),
              * input   = get_arg( x, argc, argv, 1, "-f", "-input", NULL ),
              * nodict  = get_arg( x, argc, argv, 0, "-x", "-nodict", NULL ),
@@ -1163,6 +1165,11 @@ main( int argc, char *argv[] )
     return 1;
   }
 
+  if ( user == NULL ) {
+    user = ::getenv( "USER" );
+    if ( user == NULL )
+      user = "rv_client";
+  }
   SubArray subs;
   for ( int j = 0 ; j < argc - first_sub; j++ ) {
     SubLen & sl = subs.push();
