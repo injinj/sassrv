@@ -279,6 +279,18 @@ $(bind)/rv_pub$(exe): $(rv_pub_objs) $(rv_pub_libs) $(lnk_dep)
 all_exes    += $(bind)/rv_pub$(exe)
 all_depends += $(rv_pub_deps)
 
+replayrv_files := replayrv
+replayrv_cfile := $(addprefix test/, $(addsuffix .cpp, $(replayrv_files)))
+replayrv_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(replayrv_files)))
+replayrv_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(replayrv_files)))
+replayrv_libs  := $(sassrv_lib)
+replayrv_lnk   := $(sassrv_lib) $(lnk_lib)
+
+$(bind)/replayrv$(exe): $(replayrv_objs) $(replayrv_libs) $(lnk_dep)
+
+all_exes    += $(bind)/replayrv$(exe)
+all_depends += $(replayrv_deps)
+
 #tibco_home = $(shell if [ -d /usr/tibco/tibrv ] ; then echo /usr/tibco/tibrv ; \
 #                        elif [ -d /home/chris/tibco/tibrv ] ; then echo /home/chris/tibco/tibrv ; fi)
 #api_client_includes = -I$(tibco_home)/include
@@ -695,6 +707,7 @@ CMakeLists.txt: .copr/Makefile
 	add_executable (rv_server $(rv_server_cfile))
 	add_executable (rv_client $(rv_client_cfile))
 	add_executable (rv_pub $(rv_pub_cfile))
+	add_executable (replayrv $(replayrv_cfile))
 	EOF
 
 .PHONY: dnf_depend
