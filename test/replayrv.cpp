@@ -9,6 +9,8 @@
 #include <raimd/cfile.h>
 #include <raimd/app_a.h>
 #include <raimd/enum_def.h>
+#include <raimd/rv_msg.h>
+#include <raimd/sass.h>
 #include <raikv/ev_publish.h>
 
 using namespace rai;
@@ -29,9 +31,23 @@ using namespace md;
  * Rate control follows the rv_pub model: a recurrent timer at the message
  * interval wakes the publisher, which catches the published count up to
  * elapsed_seconds * rate, so the average rate is exact and self-correcting
- * regardless of timer jitter or transient back-pressure. */
+ * regardless of timer jitter or transient back-pressure.
+ *
+ * -3 wraps each record in a SASS3 feed broadcast envelope and publishes it
+ * to _SASS.<feed>.PUB, where <feed> is the first segment of the record's
+ * subject (no -p prefix is applied; a literal _TIC. prefix on the record
+ * is stripped).  The envelope matches what raicache Sass3Svc::doFeed()
+ * parses (RaiCore sass3_svc.cpp):
+ *
+ *   { M : 23177 (SASS3_PUB_MAGIC),
+ *     T : MSG_TYPE (payload's MSG_TYPE, default UPDATE = 1),
+ *     D : { <subject> : <opaque message bytes> } }
+ *
+ * fields the parser defaults to zero (S rec status, I indicator, E expires)
+ * are omitted. */
 
 static const uint32_t PUB_TIMER_ID = 3;
+static const uint16_t SASS3_PUB_MAGIC = 23177;
 
 struct ReplayCB : public EvConnectionNotify, public RvClientCB,
                   public EvTimerCallback, public BPData {
@@ -39,7 +55,8 @@ struct ReplayCB : public EvConnectionNotify, public RvClientCB,
   EvRvClient & client;           /* connection to rv */
   MDDict     * dict;             /* optional cfile dict for verbose print */
   MDReplay     replay;           /* the capture file */
-  const char * fname;            /* replay file name, NULL/'-' = stdin */
+  const char * fname,            /* replay file name, NULL/'-' = stdin */
+             * prefix;
   uint64_t     rate_per_sec,     /* -m msgs/sec */
                loops,            /* -l times through the file, 0 = forever */
                loop_cnt,         /* completed passes */
@@ -50,14 +67,15 @@ struct ReplayCB : public EvConnectionNotify, public RvClientCB,
                have_rec,         /* parsed record not yet published */
                has_rate_timer,
                done,
+               sass3,            /* -3: SASS3 PUB envelope to _SASS.<feed>.PUB */
                verbose;
 
   ReplayCB( EvPoll &p,  EvRvClient &c,  const char *fn,  uint64_t rate,
-            uint64_t lp,  bool verb )
-    : poll( p ), client( c ), dict( 0 ), fname( fn ), rate_per_sec( rate ),
-      loops( lp ), loop_cnt( 0 ), current_pub( 0 ), rate_accum( 0 ),
-      start_time_ns( 0 ), started( false ), have_rec( false ),
-      has_rate_timer( false ), done( false ), verbose( verb ) {
+            uint64_t lp,  bool s3,  bool verb )
+    : poll( p ), client( c ), dict( 0 ), fname( fn ), prefix( "_TIC." ),
+      rate_per_sec( rate ), loops( lp ), loop_cnt( 0 ), current_pub( 0 ),
+      rate_accum( 0 ), start_time_ns( 0 ), started( false ), have_rec( false ),
+      has_rate_timer( false ), done( false ), sass3( s3 ), verbose( verb ) {
     this->bp_flags = BP_FORWARD | BP_NOTIFY;
   }
   bool open_input( void ) noexcept;
@@ -205,8 +223,61 @@ ReplayCB::run_publisher( void ) noexcept
       }
       fflush( stdout );
     }
-    EvPublish pub( this->replay.subj, this->replay.subjlen, NULL, 0,
-                   this->replay.msgbuf, this->replay.msglen,
+    const char * sub     = this->replay.subj;
+    char         subj[ 1024 ];
+    size_t       len     = this->replay.subjlen;
+    void       * msg_buf = this->replay.msgbuf;
+    size_t       msg_len = this->replay.msglen;
+
+    if ( this->sass3 ) {
+      /* the data subject is the record subject, sans any _TIC. prefix;
+       * the -p prefix is not applied in envelope mode */
+      size_t slen = len;
+      if ( slen > 5 && ::memcmp( sub, "_TIC.", 5 ) == 0 ) {
+        sub  += 5;
+        slen -= 5;
+      }
+      /* feed = first segment of the data subject */
+      const char * dot = (const char *) ::memchr( sub, '.', slen );
+      size_t       feed_len = ( dot == NULL ? slen : (size_t) ( dot - sub ) );
+      /* nul-terminated data subject = the D field name */
+      char * dsubj = (char *) mem.make( slen + 1 );
+      ::memcpy( dsubj, sub, slen );
+      dsubj[ slen ] = '\0';
+
+      /* T from the payload's MSG_TYPE when present, default UPDATE (1) */
+      uint16_t msg_type = MD_UPDATE_TYPE;
+      if ( m != NULL ) {
+        MDFieldReader rd( *m );
+        uint16_t      t;
+        if ( rd.find( MD_SASS_MSG_TYPE, MD_SASS_MSG_TYPE_LEN ) &&
+             rd.get_uint( t ) )
+          msg_type = t;
+      }
+      /* { M : magic, T : msg type, D : { subject : opaque payload } } */
+      size_t sz = this->replay.msglen + slen + 128;
+      RvMsgWriter env( mem, mem.make( sz ), sz );
+      env.append_uint( "M", 2, SASS3_PUB_MAGIC )
+         .append_uint( "T", 2, msg_type );
+      RvMsgWriter d( mem, NULL, 0 );
+      env.append_msg( "D", 2, d );
+      d.append_opaque( dsubj, slen + 1, this->replay.msgbuf,
+                       this->replay.msglen );
+      env.update_hdr( d );
+      msg_buf = env.buf;
+      msg_len = env.off;
+      msg_enc = RVMSG_TYPE_ID;
+      /* publish to _SASS.<feed>.PUB */
+      len = (size_t) ::snprintf( subj, sizeof( subj ), "_SASS.%.*s.PUB",
+                                 (int) feed_len, sub );
+      sub = subj;
+    }
+    else if ( this->prefix != NULL ) {
+      len = (size_t) ::snprintf( subj, sizeof( subj ), "%s%.*s",
+                                 this->prefix, (int) len, sub );
+      sub = subj;
+    }
+    EvPublish pub( sub, len, NULL, 0, msg_buf, msg_len,
                    this->client.sub_route, this->client, 0, msg_enc );
     this->current_pub++;
     this->have_rec = false; /* queued even on flow control */
@@ -277,11 +348,13 @@ main( int argc, const char *argv[] )
   const char * daemon   = get_arg( x, argc, argv, 1, "-d", "-daemon", "tcp:7500" ),
              * network  = get_arg( x, argc, argv, 1, "-n", "-network", "" ),
              * service  = get_arg( x, argc, argv, 1, "-s", "-service", "7500" ),
+             * prefix   = get_arg( x, argc, argv, 1, "-p", "-prefix", "_TIC." ),
              * user     = get_arg( x, argc, argv, 1, "-u", "-user", "replayrv" ),
              * path     = get_arg( x, argc, argv, 1, "-c", "-cfile", NULL ),
              * file     = get_arg( x, argc, argv, 1, "-f", "-file", NULL ),
              * msg_rate = get_arg( x, argc, argv, 1, "-m", "-rate", "100" ),
              * loop     = get_arg( x, argc, argv, 1, "-l", "-loop", "1" ),
+             * sass3    = get_arg( x, argc, argv, 0, "-3", "-sass3", NULL ),
              * verbose  = get_arg( x, argc, argv, 0, "-v", "-verbose", NULL ),
              * help     = get_arg( x, argc, argv, 0, "-h", "-help", 0 );
 
@@ -293,11 +366,15 @@ main( int argc, const char *argv[] )
       "  -n network = network\n"
       "  -s service = service (7500)\n"
       "  -u user    = user name (replayrv)\n"
+      "  -p prefix  = prefix subject (_TIC.)\n"
       "  -c cfile   = load dictionary from cfiles (for -v decoding)\n"
       "  -f file    = MDReplay capture file (default '-' = stdin)\n"
       "               format: subject '\\n' msglen '\\n' msg-bytes, repeated\n"
       "  -m rate    = msgs per second (100; 0 = as fast as possible)\n"
       "  -l loops   = passes through the file (1; 0 = loop forever)\n"
+      "  -3         = wrap records in a SASS3 PUB envelope { M, T, D } and\n"
+      "               publish to _SASS.<feed>.PUB; <feed> = first segment\n"
+      "               of the record subject (-p prefix is not applied)\n"
       "  -v         = print each message published\n",
       argv[ 0 ] );
     return 1;
@@ -324,7 +401,11 @@ main( int argc, const char *argv[] )
   EvRvClientParameters parm( daemon, network, service, user, 0 );
   EvRvClient           conn( poll );
   ReplayCB             data( poll, conn, file, rate, loops,
-                             verbose != NULL );
+                             sass3 != NULL, verbose != NULL );
+  if ( prefix != NULL && prefix[ 0 ] != '\0' )
+    data.prefix = prefix;
+  else
+    data.prefix = NULL;
   /* open before connecting so a bad file fails fast */
   if ( ! data.open_input() ) {
     fprintf( stderr, "Failed to open replay file %s\n", file );
