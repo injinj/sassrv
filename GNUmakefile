@@ -597,18 +597,18 @@ $(bind)/fanrv7test$(exe): $(fanrv7test_objs) $(fanrv7test_libs) $(lnk_dep)
 all_exes    += $(bind)/fanrv7test$(exe)
 all_depends += $(fanrv7test_deps)
 
-#rvfieldid_files := rvfieldid
-#rvfieldid_cfile := $(addprefix src/, $(addsuffix .cpp, $(rvfieldid_files)))
-#rvfieldid_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(rvfieldid_files)))
-#rvfieldid_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(rvfieldid_files)))
-#rvfieldid_libs  := $(sassrv_lib) $(libd)/librv7ftlib.a $(libd)/librv7lib.a
-#rvfieldid_lnk   := $(libd)/librv7ftlib.a $(libd)/librv7lib.a $(sassrv_lib) $(lnk_lib)
-#
-#$(bind)/rvfieldid$(exe): $(rvfieldid_objs) $(rvfieldid_libs) $(lnk_dep)
-#
-#all_exes    += $(bind)/rvfieldid$(exe)
-#all_depends += $(rvfieldid_deps)
-#
+modrecv_files := modrecv
+modrecv_cfile := $(addprefix src/, $(addsuffix .cpp, $(modrecv_files)))
+modrecv_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(modrecv_files)))
+modrecv_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(modrecv_files)))
+modrecv_libs  := $(sassrv_lib) $(libd)/librv7ftlib.a $(libd)/librv7lib.a
+modrecv_lnk   := $(libd)/librv7ftlib.a $(libd)/librv7lib.a $(sassrv_lib) $(lnk_lib)
+
+$(bind)/modrecv$(exe): $(modrecv_objs) $(modrecv_libs) $(lnk_dep)
+
+all_exes    += $(bind)/modrecv$(exe)
+all_depends += $(modrecv_deps)
+
 #processtransport_2_files := processtransport_2
 #processtransport_2_cfile := $(addprefix src/, $(addsuffix .cpp, $(processtransport_2_files)))
 #processtransport_2_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(processtransport_2_files)))

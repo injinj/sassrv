@@ -535,11 +535,8 @@ struct api_Msg {
   MsgTether     * owner;
   const char    * subject,
                 * reply;
-  const void    * msg_data;
   uint16_t        subject_len,
                   reply_len;
-  uint32_t        msg_enc,
-                  msg_len;
   tibrvEvent      event;
   RvMsg         * rvmsg;
   MDFieldReader * rd;
@@ -557,8 +554,8 @@ struct api_Msg {
   void * operator new( size_t, void *ptr ) { return ptr; }
   void operator delete( void *ptr ) { ::free( ptr ); }
   api_Msg( tibrvEvent ev ) :
-    next( 0 ), back( 0 ), owner( 0 ), subject( 0 ), reply( 0 ), msg_data( 0 ),
-    subject_len( 0 ), reply_len( 0 ), msg_enc( 0 ), msg_len( 0 ), event( ev ),
+    next( 0 ), back( 0 ), owner( 0 ), subject( 0 ), reply( 0 ),
+    subject_len( 0 ), reply_len( 0 ), event( ev ),
     rvmsg( 0 ), rd( 0 ), wr( this->mem, NULL, 0 ), cl( 0 ), wr_refs( 0 ),
     rd_refs( 0 ), in_queue( false ), serial( 0 ), id_used( 0 ) {}
   ~api_Msg() noexcept;
@@ -571,11 +568,8 @@ struct api_Msg {
   void reset( void ) {
     this->subject     = NULL;
     this->reply       = NULL;
-    this->msg_data    = NULL;
     this->subject_len = 0;
     this->reply_len   = 0;
-    this->msg_enc     = 0;
-    this->msg_len     = 0;
     this->rvmsg       = NULL;
     this->rd          = NULL;
     this->wr.buf      = NULL;
@@ -585,6 +579,7 @@ struct api_Msg {
     this->wr.reset();
     this->mem.reuse();
   }
+  void *get_as_bytes( tibrv_u32 *size ) noexcept;
 };
 struct EvPipeRec;
 struct EvPipe : public EvConnection {

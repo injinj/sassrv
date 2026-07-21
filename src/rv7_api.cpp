@@ -213,6 +213,23 @@ api_Msg::make( EvPublish &pub,  RvMsg *rvmsg,  MsgTether *tether,
   return m;
 }
 
+void *
+api_Msg::get_as_bytes( tibrv_u32 *size ) noexcept
+{
+  if ( this->wr_refs > this->rd_refs || this->rvmsg == NULL ) {
+    tibrv_u32 z = this->wr.update_hdr();
+    if ( size != NULL )
+      *size = z;
+    return this->wr.buf;
+  }
+  uint8_t * buf = (uint8_t *) this->rvmsg->msg_buf;
+  if ( size != NULL ) {
+    size_t len = this->rvmsg->msg_end - this->rvmsg->msg_off;
+    *size = len;
+  }
+  return &buf[ this->rvmsg->msg_off ];
+}
+
 void
 api_Msg::release( void ) noexcept
 {
@@ -1337,12 +1354,8 @@ Tibrv_API::get_send_ctx( api_Transport * t ) noexcept
 static void
 send_ctx_append( SendCtx * c,  api_Transport * t,  api_Msg * m ) noexcept
 {
-  const void * data    = m->msg_data;
-  size_t       datalen = m->msg_len;
-  if ( datalen == 0 ) {
-    data    = m->wr.buf;
-    datalen = m->wr.update_hdr();
-  }
+  const void * data    = m->wr.buf;
+  size_t       datalen = m->wr.update_hdr();
   char * subj = (char *) c->byte_mem.make( m->subject_len + 1 );
   ::memcpy( subj, m->subject, m->subject_len );
   subj[ m->subject_len ] = 0;
@@ -1544,12 +1557,8 @@ Tibrv_API::Send( tibrvTransport tport, tibrvMsg msg ) noexcept
     }
     return TIBRV_OK;
   }
-  const void * data    = m->msg_data;
-  size_t       datalen = m->msg_len;
-  if ( datalen == 0 ) {
-    data    = m->wr.buf;
-    datalen = m->wr.update_hdr();
-  }
+  tibrv_u32    datalen;
+  const void * data = m->get_as_bytes( &datalen );
   EvPublish pub( m->subject, m->subject_len, m->reply, m->reply_len,
                  data, datalen, t->client.sub_route, *t->me, 0, RVMSG_TYPE_ID );
   EvPipeRec rec( OP_TPORT_SEND, t, &pub, 1, &t->mutex, &t->cond );
@@ -1586,12 +1595,8 @@ Tibrv_API::Sendv( tibrvTransport tport, tibrvMsg * vec, tibrv_u32 cnt ) noexcept
 
   for ( tibrv_u32 i = 0; i < cnt; i++ ) {
     api_Msg    * m       = (api_Msg *) vec[ i ];
-    const void * data    = m->msg_data;
-    size_t       datalen = m->msg_len;
-    if ( datalen == 0 ) {
-      data    = m->wr.buf;
-      datalen = m->wr.update_hdr();
-    }
+    tibrv_u32    datalen;
+    const void * data    = m->get_as_bytes( &datalen );
     new ( &pub[ i ] )
       EvPublish( m->subject, m->subject_len, m->reply, m->reply_len,
                  data, datalen, t->client.sub_route, *t->me, 0, RVMSG_TYPE_ID );
@@ -1663,12 +1668,8 @@ Tibrv_API::SendRequest( tibrvTransport tport, tibrvMsg msg, tibrvMsg * reply,
     m->reply = m->mem.stralloc( len, inbox );
     m->reply_len = len;
   }
-  const void * data    = m->msg_data;
-  size_t       datalen = m->msg_len;
-  if ( datalen == 0 ) {
-    data    = m->wr.buf;
-    datalen = m->wr.update_hdr();
-  }
+  tibrv_u32    datalen;
+  const void * data    = m->get_as_bytes( &datalen );
   EvPublish pub( m->subject, m->subject_len, m->reply, m->reply_len,
                  data, datalen, t->client.sub_route, *t->me, 0, RVMSG_TYPE_ID );
   EvPipeRec rec( OP_TPORT_SEND, t, &pub, 1, &t->mutex, &t->cond );
@@ -1707,12 +1708,8 @@ Tibrv_API::SendReply( tibrvTransport tport, tibrvMsg msg,
     return TIBRV_INVALID_TRANSPORT;
   api_Msg    * m       = (api_Msg *) msg,
              * r       = (api_Msg *) request_msg;
-  const void * data    = m->msg_data;
-  size_t       datalen = m->msg_len;
-  if ( datalen == 0 ) {
-    data    = m->wr.buf;
-    datalen = m->wr.update_hdr();
-  }
+  tibrv_u32    datalen;
+  const void * data    = m->get_as_bytes( &datalen );
   EvPublish pub( r->reply, r->reply_len, m->reply, m->reply_len,
                  data, datalen, t->client.sub_route, *t->me, 0, RVMSG_TYPE_ID );
   EvPipeRec rec( OP_TPORT_SEND, t, &pub, 1, &t->mutex, &t->cond );

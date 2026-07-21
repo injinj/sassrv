@@ -484,7 +484,7 @@ EvRvClient::make_inbox( char *inbox,  uint32_t num ) noexcept
   ::memcpy( inbox, "_INBOX.", off );
   ::memcpy( &inbox[ off ], this->session, this->session_len );
   off += this->session_len;
-  if ( off > 0 )
+  if ( this->session_len > 0 )
     inbox[ off++ ] = '.';
   off += uint32_to_string( num, &inbox[ off ] );
   inbox[ off ] = '\0';
