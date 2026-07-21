@@ -233,16 +233,6 @@ struct RvHostEntry {
   }
 };
 
-/* SASS3 QueryFlags (cache_if.h), parsed from _SNAP flags field */
-enum RvSass3QueryFlags {
-  S3_SNAPSHOT       = 0x01,
-  S3_SUBSCRIBE      = 0x02,
-  S3_INITIAL_VALUES = 0x04,
-  S3_UNSUBSCRIBE    = 0x08,
-  S3_REFRESH        = 0x10,
-  S3_RESUBSCRIBE    = 0x80
-};
-
 struct RvSass3Key {
   uint32_t     subj_hash,
                subject_id,

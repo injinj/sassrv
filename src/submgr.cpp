@@ -14,6 +14,7 @@
 #include <sassrv/submgr.h>
 #include <raikv/ev_publish.h>
 #include <raimd/tib_msg.h>
+#include <raimd/sass.h>
 
 using namespace rai;
 using namespace kv;
@@ -333,14 +334,19 @@ void
 RvSubscriptionDB::do_wild_subscription( Filter &f,  bool is_subscribe,
                                         int k ) noexcept
 {
-  const char     * un    = ( is_subscribe ? "" : "un" );
-  const SubMatch & match = rv_info_sub[ k ];
-  size_t           len   = f.wild_len + match.len;
+  const char     * un       = ( is_subscribe ? "" : "un" );
+  const SubMatch & match    = rv_info_sub[ k ];
+  size_t           len      = f.wild_len + match.len,
+                   wild_len = f.wild_len;;
   CatMalloc        sub( len + 5 );
 
+  if ( k == IS_SASS ) {
+    if ( wild_len > 2 && f.wild[ wild_len - 1 ] == '>' )
+      wild_len -= 2;
+  }
   /* LISTEN_START.FEED. */
   sub.b( match.sub, match.len - 1 ) /* strip '>' */
-     .b( f.wild, f.wild_len );
+     .b( f.wild, wild_len );
   if ( k == IS_SASS )
     sub.s( ".SUB" );
   sub.end();
@@ -1136,7 +1142,7 @@ RvSubscriptionDB::process_events( void ) noexcept
                    entry->app, entry->pid );
       }
       RvSubscriptionListener::Sass3
-        op( *entry, *sub, NULL, 0, S3_UNSUBSCRIBE, false, true );
+        op( *entry, *sub, NULL, 0, QF_UNSUBSCRIBE, false, true );
       this->cb->on_sass3( op );
     }
     delete entry;
@@ -1247,26 +1253,26 @@ RvSubscriptionDB::sass3( RvSubscription &script,
 
   if ( this->sass3_tab.locate( k, pos ) ) {
     entry = this->sass3_tab.tab[ pos ];
-    if ( flags == S3_SNAPSHOT )
+    if ( flags == QF_SNAPSHOT )
       return *entry;
     this->sass3_list.pop( entry );
   }
   else {
     entry = RvSass3Entry::create( k, this->cur_mono );
-    if ( flags == S3_SNAPSHOT || flags == S3_UNSUBSCRIBE ) {
+    if ( flags == QF_SNAPSHOT || flags == QF_UNSUBSCRIBE ) {
       entry->start_mono = 0;
       entry->ref_mono   = 0;
       entry->subject_id = 0;
       this->sass3_list.push_hd( entry );
       return *entry;
     }
-    else if ( (flags & S3_RESUBSCRIBE) != 0 ) {
+    else if ( (flags & QF_RESUBSCRIBE) != 0 ) {
       entry->start_mono = 0;
     }
     this->sass3_tab.insert( pos, entry );
     script.refcnt++;
   }
-  if ( flags == S3_UNSUBSCRIBE ) {
+  if ( flags == QF_UNSUBSCRIBE ) {
     this->sass3_tab.remove_slot( pos );
     entry->ref( 0 );
     entry->subject_id = 0;
@@ -1376,10 +1382,10 @@ RvSubscriptionDB::process_pub2( EvPublish &pub,  const char *subject,
           if ( ! rd.find( "T" ) )
             break;
           rd.get_uint( flags );
-          if ( ( flags & S3_UNSUBSCRIBE ) != 0 )
-            flags = S3_UNSUBSCRIBE;
-          else if ( ( flags & S3_SNAPSHOT ) != 0 )
-            flags = S3_SNAPSHOT;
+          if ( ( flags & QF_UNSUBSCRIBE ) != 0 )
+            flags = QF_UNSUBSCRIBE;
+          else if ( ( flags & QF_SNAPSHOT ) != 0 )
+            flags = QF_SNAPSHOT;
           if ( ! rd.find( "A" ) )
             break;
           MDMsg * n;
@@ -1410,15 +1416,15 @@ RvSubscriptionDB::process_pub2( EvPublish &pub,  const char *subject,
                     this->sass3( sub, u, ulen, h, hlen, a, alen, pid, flags );
                   uint16_t f = flags;
                   bool is_asserted = false;
-                  if ( f == S3_RESUBSCRIBE ) {
+                  if ( f == QF_RESUBSCRIBE ) {
                     if ( script.start_mono != 0 )
                       continue;
                     script.start_mono = this->cur_mono;
-                    f |= S3_REFRESH;
+                    f |= QF_REFRESH;
                     is_asserted = true;
                   }
                   bool is_orphan = false;
-                  if ( f == S3_UNSUBSCRIBE ) {
+                  if ( f == QF_UNSUBSCRIBE ) {
                     if ( script.start_mono == 0 )
                       is_orphan = true;
                   }

@@ -47,7 +47,6 @@ using namespace md;
  * are omitted. */
 
 static const uint32_t PUB_TIMER_ID = 3;
-static const uint16_t SASS3_PUB_MAGIC = 23177;
 
 struct ReplayCB : public EvConnectionNotify, public RvClientCB,
                   public EvTimerCallback, public BPData {

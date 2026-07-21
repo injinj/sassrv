@@ -118,7 +118,7 @@ usage( void )
 int
 get_InitParms( int argc, char* argv[], int min_parms, char** serviceStr,
                char** networkStr, char** daemonStr, int* noDict,
-               int* useSass3, char** feedStr )
+               int* useSass3 )
 {
   int i = 1;
 
@@ -138,10 +138,6 @@ get_InitParms( int argc, char* argv[], int min_parms, char** serviceStr,
     }
     else if ( i + 2 > argc ) {
       usage();
-    }
-    else if ( strcmp( argv[ i ], "-feed" ) == 0 ) {
-      *feedStr = argv[ i + 1 ];
-      i += 2;
     }
     else if ( strcmp( argv[ i ], "-service" ) == 0 ) {
       *serviceStr = argv[ i + 1 ];
@@ -184,12 +180,11 @@ main( int argc, char** argv )
   char* daemonStr  = NULL;
   int   noDict     = 0;
   int   useSass3   = 0;
-  char* feedStr    = NULL;
 
   char* progname = argv[ 0 ];
 
   currentArg = get_InitParms( argc, argv, MIN_PARMS, &serviceStr, &networkStr,
-                              &daemonStr, &noDict, &useSass3, &feedStr );
+                              &daemonStr, &noDict, &useSass3 );
   err        = tibrv_Open();
   if ( err != TIBRV_OK ) {
     fprintf( stderr, "%s: Failed to open TIB/Rendezvous: %s\n", progname,
@@ -295,33 +290,27 @@ main( int argc, char** argv )
          * records, from MARKET_PRICE_DOMAIN in raimd omm_flags.h). */
         tibrvMsg subMsg, acctMsg, subjMsg;
         char     hostname[ 256 ];
-        char     feedName[ 256 ];
         const char* user = getenv( "USER" );
+        const char* subj = argv[ i + currentArg ];
+        const char* dot  = strchr( subj, '.' );
+        size_t      seg  = ( dot != NULL ? (size_t) ( dot - subj )
+                                         : strlen( subj ) );
         if ( user == NULL )
           user = "subrv7test";
         if ( gethostname( hostname, sizeof( hostname ) ) != 0 )
           snprintf( hostname, sizeof( hostname ), "localhost" );
-        if ( feedStr != NULL ) {
-          snprintf( feedName, sizeof( feedName ), "%s", feedStr );
+
+        if ( seg == 0 || seg > 255 ) {
+          fprintf( stderr, "%s: bad feed segment in subject \"%s\"\n",
+                   progname, subj );
+          exit( 1 );
         }
-        else {
-          const char* subj = argv[ i + currentArg ];
-          const char* dot  = strchr( subj, '.' );
-          size_t      seg  = ( dot != NULL ? (size_t) ( dot - subj )
-                                           : strlen( subj ) );
-          if ( seg == 0 || seg >= sizeof( feedName ) ) {
-            fprintf( stderr, "%s: bad feed segment in subject \"%s\"\n",
-                     progname, subj );
-            exit( 1 );
-          }
-          memcpy( feedName, subj, seg );
-          feedName[ seg ] = '\0';
-        }
+
         tibrvMsg_Create( &subMsg );
         tibrvMsg_Create( &acctMsg );
         tibrvMsg_Create( &subjMsg );
-        snprintf( snapSubject, sizeof( snapSubject ), "_SASS.%s.SUB",
-                  feedName );
+        snprintf( snapSubject, sizeof( snapSubject ), "_SASS.%.*s.SUB",
+                  (int) seg, subj );
         tibrvMsg_SetSendSubject( subMsg, snapSubject );
         tibrvMsg_SetReplySubject( subMsg, inbox );
         tibrvMsg_AddU16( subMsg, "M", 23176 ); /* SASS3_SUB_MAGIC */
@@ -340,7 +329,8 @@ main( int argc, char** argv )
       }
       else {
         tibrvMsg_Create( &snapMsg );
-        snprintf( snapSubject, sizeof( snapSubject ), "_SNAP.%s", argv[ i + currentArg ] );
+        snprintf( snapSubject, sizeof( snapSubject ), "_SNAP.%s",
+                  argv[ i + currentArg ] );
         tibrvMsg_SetSendSubject( snapMsg, snapSubject );
         tibrvMsg_SetReplySubject( snapMsg, inbox );
         tibrvMsg_AddU16( snapMsg, "flags", 6 );
