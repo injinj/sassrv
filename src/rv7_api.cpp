@@ -216,6 +216,15 @@ api_Msg::make( EvPublish &pub,  RvMsg *rvmsg,  MsgTether *tether,
 void *
 api_Msg::get_as_bytes( tibrv_u32 *size ) noexcept
 {
+  if ( this->wr_refs == this->rd_refs && this->rd != NULL ) {
+    MDMsg &iter_msg = this->rd->iter->iter_msg();
+    uint8_t * buf = (uint8_t *) iter_msg.msg_buf;
+    if ( size != NULL ) {
+      size_t len = iter_msg.msg_end - iter_msg.msg_off;
+      *size = len;
+    }
+    return &buf[ iter_msg.msg_off ];
+  }
   if ( this->wr_refs > this->rd_refs || this->rvmsg == NULL ) {
     tibrv_u32 z = this->wr.update_hdr();
     if ( size != NULL )
