@@ -597,17 +597,17 @@ $(bind)/fanrv7test$(exe): $(fanrv7test_objs) $(fanrv7test_libs) $(lnk_dep)
 all_exes    += $(bind)/fanrv7test$(exe)
 all_depends += $(fanrv7test_deps)
 
-modrecv_files := modrecv
-modrecv_cfile := $(addprefix src/, $(addsuffix .cpp, $(modrecv_files)))
-modrecv_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(modrecv_files)))
-modrecv_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(modrecv_files)))
-modrecv_libs  := $(sassrv_lib) $(libd)/librv7ftlib.a $(libd)/librv7lib.a
-modrecv_lnk   := $(libd)/librv7ftlib.a $(libd)/librv7lib.a $(sassrv_lib) $(lnk_lib)
-
-$(bind)/modrecv$(exe): $(modrecv_objs) $(modrecv_libs) $(lnk_dep)
-
-all_exes    += $(bind)/modrecv$(exe)
-all_depends += $(modrecv_deps)
+#resendmsg_files := resendmsg
+#resendmsg_cfile := $(addprefix src/, $(addsuffix .cpp, $(resendmsg_files)))
+#resendmsg_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(resendmsg_files)))
+#resendmsg_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(resendmsg_files)))
+#resendmsg_libs  := $(sassrv_lib) $(libd)/librv7ftlib.a $(libd)/librv7lib.a
+#resendmsg_lnk   := $(libd)/librv7ftlib.a $(libd)/librv7lib.a $(sassrv_lib) $(lnk_lib)
+#
+#$(bind)/resendmsg$(exe): $(resendmsg_objs) $(resendmsg_libs) $(lnk_dep)
+#
+#all_exes    += $(bind)/resendmsg$(exe)
+#all_depends += $(resendmsg_deps)
 
 #processtransport_2_files := processtransport_2
 #processtransport_2_cfile := $(addprefix src/, $(addsuffix .cpp, $(processtransport_2_files)))
