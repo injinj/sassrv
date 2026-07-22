@@ -1,8 +1,10 @@
+#define _DEFAULT_SOURCE /* gethostname with -std=c11 */
 #include <stdlib.h>
 #include <stdio.h>
 #include <signal.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <sassrv/rv7api.h>
 #include <raimd/md_msg.h>
@@ -102,21 +104,42 @@ void
 usage( void )
 {
   fprintf( stderr, "subrv7test [-service service] [-network network] \n" );
-  fprintf( stderr, "            [-daemon daemon] subject_list\n" );
+  fprintf( stderr, "            [-daemon daemon] [-x|-nodict] [-3|-sass3]\n" );
+  fprintf( stderr, "            [-feed feed] subject_list\n" );
+  fprintf( stderr, "  -x, -nodict : don't fetch a SASS dictionary at startup\n" );
+  fprintf( stderr, "  -3, -sass3  : use the SASS3 protocol (_SASS.<feed>.SUB\n" );
+  fprintf( stderr, "                SUBSCRIBE|INITIAL_VALUES) instead of rv7 _SNAP;\n" );
+  fprintf( stderr, "                feed = first segment of the subject\n" );
+  fprintf( stderr, "                (FEED.DOMAIN.INSTRUMENT.EXCHANGE)\n" );
+  fprintf( stderr, "  -feed feed  : override the SASS3 feed name\n" );
   exit( 1 );
 }
 
 int
 get_InitParms( int argc, char* argv[], int min_parms, char** serviceStr,
-               char** networkStr, char** daemonStr )
+               char** networkStr, char** daemonStr, int* noDict,
+               int* useSass3 )
 {
   int i = 1;
 
   if ( argc < min_parms )
     usage();
 
-  while ( i + 2 <= argc && *argv[ i ] == '-' ) {
-    if ( strcmp( argv[ i ], "-service" ) == 0 ) {
+  while ( i < argc && *argv[ i ] == '-' ) {
+    if ( strcmp( argv[ i ], "-x" ) == 0 ||
+         strcmp( argv[ i ], "-nodict" ) == 0 ) {
+      *noDict = 1;
+      i += 1;
+    }
+    else if ( strcmp( argv[ i ], "-3" ) == 0 ||
+              strcmp( argv[ i ], "-sass3" ) == 0 ) {
+      *useSass3 = 1;
+      i += 1;
+    }
+    else if ( i + 2 > argc ) {
+      usage();
+    }
+    else if ( strcmp( argv[ i ], "-service" ) == 0 ) {
       *serviceStr = argv[ i + 1 ];
       i += 2;
     }
@@ -155,11 +178,13 @@ main( int argc, char** argv )
   char* serviceStr = NULL;
   char* networkStr = NULL;
   char* daemonStr  = NULL;
+  int   noDict     = 0;
+  int   useSass3   = 0;
 
   char* progname = argv[ 0 ];
 
   currentArg = get_InitParms( argc, argv, MIN_PARMS, &serviceStr, &networkStr,
-                              &daemonStr );
+                              &daemonStr, &noDict, &useSass3 );
   err        = tibrv_Open();
   if ( err != TIBRV_OK ) {
     fprintf( stderr, "%s: Failed to open TIB/Rendezvous: %s\n", progname,
@@ -197,12 +222,15 @@ main( int argc, char** argv )
     inbox_closure[ i ].dict = NULL;
   }
 
-  err = tibrvTransport_CreateInbox( transport, inbox, sizeof( inbox ) );
-  if ( err == TIBRV_OK )
-    err = tibrvEvent_CreateListener( &dictId, TIBRV_DEFAULT_QUEUE,
-                                     dict_callback, transport,
-                                     inbox, &closure );
-  if ( err == TIBRV_OK ) {
+  err = TIBRV_OK;
+  if ( ! noDict ) {
+    err = tibrvTransport_CreateInbox( transport, inbox, sizeof( inbox ) );
+    if ( err == TIBRV_OK )
+      err = tibrvEvent_CreateListener( &dictId, TIBRV_DEFAULT_QUEUE,
+                                       dict_callback, transport,
+                                       inbox, &closure );
+  }
+  if ( ! noDict && err == TIBRV_OK ) {
     int times = 0;
     for (;;) {
       tibrvMsg_Create( &snapMsg );
@@ -253,13 +281,62 @@ main( int argc, char** argv )
                                        my_callback, transport,
                                        argv[ i + currentArg ], &closure );
     if ( err == TIBRV_OK ) {
-      tibrvMsg_Create( &snapMsg );
-      snprintf( snapSubject, sizeof( snapSubject ), "_SNAP.%s", argv[ i + currentArg ] );
-      tibrvMsg_SetSendSubject( snapMsg, snapSubject );
-      tibrvMsg_SetReplySubject( snapMsg, inbox );
-      tibrvMsg_AddU16( snapMsg, "flags", 6 );
-      err = tibrvTransport_Send( transport, snapMsg );
-      tibrvMsg_Destroy( snapMsg );
+      if ( useSass3 ) {
+        /* SASS3: _SASS.<feed>.SUB, magic 23176, T = QueryFlags
+         * (SUBSCRIBE|INITIAL_VALUES), A = accounting {U,H,A,P},
+         * S = subjects as field NAMES; reply inbox = image/ack address.
+         * The feed name is the FIRST SEGMENT of the subject: subjects are
+         * FEED.DOMAIN.INSTRUMENT.EXCHANGE (DOMAIN usually REC for level 2
+         * records, from MARKET_PRICE_DOMAIN in raimd omm_flags.h). */
+        tibrvMsg subMsg, acctMsg, subjMsg;
+        char     hostname[ 256 ];
+        const char* user = getenv( "USER" );
+        const char* subj = argv[ i + currentArg ];
+        const char* dot  = strchr( subj, '.' );
+        size_t      seg  = ( dot != NULL ? (size_t) ( dot - subj )
+                                         : strlen( subj ) );
+        if ( user == NULL )
+          user = "subrv7test";
+        if ( gethostname( hostname, sizeof( hostname ) ) != 0 )
+          snprintf( hostname, sizeof( hostname ), "localhost" );
+
+        if ( seg == 0 || seg > 255 ) {
+          fprintf( stderr, "%s: bad feed segment in subject \"%s\"\n",
+                   progname, subj );
+          exit( 1 );
+        }
+
+        tibrvMsg_Create( &subMsg );
+        tibrvMsg_Create( &acctMsg );
+        tibrvMsg_Create( &subjMsg );
+        snprintf( snapSubject, sizeof( snapSubject ), "_SASS.%.*s.SUB",
+                  (int) seg, subj );
+        tibrvMsg_SetSendSubject( subMsg, snapSubject );
+        tibrvMsg_SetReplySubject( subMsg, inbox );
+        tibrvMsg_AddU16( subMsg, "M", 23176 ); /* SASS3_SUB_MAGIC */
+        tibrvMsg_AddU32( subMsg, "T", 6 );     /* SUBSCRIBE|INITIAL_VALUES */
+        tibrvMsg_AddString( acctMsg, "U", user );
+        tibrvMsg_AddString( acctMsg, "H", hostname );
+        tibrvMsg_AddString( acctMsg, "A", "subrv7test" );
+        tibrvMsg_AddU32( acctMsg, "P", (tibrv_u32) getpid() );
+        tibrvMsg_AddMsg( subMsg, "A", acctMsg );
+        tibrvMsg_AddU8( subjMsg, argv[ i + currentArg ], 1 );
+        tibrvMsg_AddMsg( subMsg, "S", subjMsg );
+        err = tibrvTransport_Send( transport, subMsg );
+        tibrvMsg_Destroy( subjMsg );
+        tibrvMsg_Destroy( acctMsg );
+        tibrvMsg_Destroy( subMsg );
+      }
+      else {
+        tibrvMsg_Create( &snapMsg );
+        snprintf( snapSubject, sizeof( snapSubject ), "_SNAP.%s",
+                  argv[ i + currentArg ] );
+        tibrvMsg_SetSendSubject( snapMsg, snapSubject );
+        tibrvMsg_SetReplySubject( snapMsg, inbox );
+        tibrvMsg_AddU16( snapMsg, "flags", 6 );
+        err = tibrvTransport_Send( transport, snapMsg );
+        tibrvMsg_Destroy( snapMsg );
+      }
     }
     if ( err != TIBRV_OK ) {
       fprintf( stderr, "%s: Error %s listening to \"%s\"\n", progname,

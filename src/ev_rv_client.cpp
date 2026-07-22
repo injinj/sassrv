@@ -292,7 +292,7 @@ EvRvClient::rv_connect( EvRvClientParameters &p,
       }
     }
     if ( this->listen_subs.count > 0 ) {
-      this->sub_db.start_subscriptions( false );
+      this->sub_db.start_subscriptions( false, true, false );
       this->timer_id = this->poll.mono_ns;
       this->poll.timer.add_timer_seconds( this->fd, 1, this->timer_id, 0 );
     }
@@ -484,7 +484,7 @@ EvRvClient::make_inbox( char *inbox,  uint32_t num ) noexcept
   ::memcpy( inbox, "_INBOX.", off );
   ::memcpy( &inbox[ off ], this->session, this->session_len );
   off += this->session_len;
-  if ( off > 0 )
+  if ( this->session_len > 0 )
     inbox[ off++ ] = '.';
   off += uint32_to_string( num, &inbox[ off ] );
   inbox[ off ] = '\0';
@@ -601,7 +601,7 @@ EvRvClient::recv_conn( void ) noexcept
     }
   }
   if ( this->listen_subs.count > 0 ) {
-    this->sub_db.start_subscriptions( false );
+    this->sub_db.start_subscriptions( false, true, false );
     this->timer_id = this->poll.mono_ns;
     this->poll.timer.add_timer_seconds( this->fd, 1, this->timer_id, 0 );
   }

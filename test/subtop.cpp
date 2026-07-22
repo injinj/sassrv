@@ -21,12 +21,14 @@ struct RvDataCallback : public EvConnectionNotify, public RvClientCB,
   RvSubscriptionDB sub_db;
   const char    ** sub;             /* subject strings */
   size_t           sub_count;       /* count of sub[] */
-  bool             top;
+  bool             top,
+                   sass2,
+                   sass3;
 
   RvDataCallback( EvPoll &p,  EvRvClient &c,  const char **s,  size_t cnt,
-                  bool t )
+                  bool t,  bool s2,  bool s3 )
     : poll( p ), client( c ), sub_db( c, this ), sub( s ), sub_count( cnt ),
-      top( t ) {}
+      top( t ), sass2( s2 ), sass3( s3 ) {}
 
   /* after CONNECTED message */
   virtual void on_connect( EvSocket &conn ) noexcept;
@@ -45,6 +47,7 @@ struct RvDataCallback : public EvConnectionNotify, public RvClientCB,
   virtual void on_listen_start( Start &add ) noexcept;
   virtual void on_listen_stop ( Stop  &rem ) noexcept;
   virtual void on_snapshot    ( Snap  &snp ) noexcept;
+  virtual void on_sass3       ( Sass3 &s3  ) noexcept;
   const char * ts( uint32_t mono,  const char *str,  char *buf ) noexcept;
 };
 
@@ -64,7 +67,8 @@ RvDataCallback::on_connect( EvSocket &conn ) noexcept
 void
 RvDataCallback::start_subscriptions( void ) noexcept
 {
-  this->sub_db.start_subscriptions( this->sub_count == 0 );
+  this->sub_db.start_subscriptions( this->sub_count == 0, this->sass2,
+                                    this->sass3 );
   this->poll.timer.add_timer_seconds( *this, 3, 1, 0 );
 }
 
@@ -124,13 +128,14 @@ RvDataCallback::timer_cb( uint64_t ,  uint64_t ) noexcept
             status_str  = this->ts( entry->ref_mono   , ", ref: "   , b1 );
             start_str   = this->ts( entry->start_mono , ", start: " , b2 );
             stop_str    = this->ts( entry->stop_mono  , ", stop: "  , b3 );
-            printf( "  id %.*s  state:%s%s%s%s%s%s%s\n",
-                entry->len, entry->value,
+            printf( "  id %.*s user %s state:%s%s%s%s%s%s%s\n",
+                entry->len, entry->value, entry->user_id,
                 RvSessionEntry::get_session_state_str( entry->state ),
                 status_str, b1, start_str, b2, stop_str, b3 );
             if ( (script = db.first_subject( *entry, pos2 )) != NULL ) {
               do {
-                printf( "    - %.*s\n", script->len, script->value );
+                printf( "    - %.*s (%u,%u)\n", script->len, script->value,
+                        script->refcnt, script->ref7cnt );
               } while ( (script = db.next_subject( *entry, pos2 )) != NULL );
             }
           } while ( (entry = db.next_session( host, pos )) != NULL );
@@ -146,34 +151,46 @@ void
 RvDataCallback::on_listen_start( Start &add ) noexcept
 {
   if ( add.reply_len == 0 ) {
-    printf( "%sstart %.*s refs %u from %.*s\n",
+    printf( "%sstart %.*s refs %u,%u from %.*s %s\n",
       add.is_listen_start ? "listen_" : "assert_",
-      add.sub.len, add.sub.value, add.sub.refcnt,
-      add.session.len, add.session.value );
+      add.sub.len, add.sub.value, add.sub.refcnt, add.sub.ref7cnt,
+      add.session.len, add.session.value, add.session.user_id );
   }
   else {
-    printf( "%sstart %.*s reply %.*s refs %u from %.*s\n",
+    printf( "%sstart %.*s reply %.*s refs %u,%u from %.*s %s\n",
       add.is_listen_start ? "listen_" : "assert_",
       add.sub.len, add.sub.value, add.reply_len, add.reply, add.sub.refcnt,
-      add.session.len, add.session.value );
+      add.sub.ref7cnt, add.session.len, add.session.value, add.session.user_id );
   }
 }
 
 void
 RvDataCallback::on_listen_stop( Stop &rem ) noexcept
 {
-  printf( "%sstop %.*s refs %u from %.*s%s\n",
+  printf( "%sstop %.*s refs %u,%u from %.*s%s %s\n",
     rem.is_listen_stop ? "listen_" : "assert_",
-    rem.sub.len, rem.sub.value, rem.sub.refcnt,
-    rem.session.len, rem.session.value, rem.is_orphan ? " orphan" : "" );
+    rem.sub.len, rem.sub.value, rem.sub.refcnt, rem.sub.ref7cnt,
+    rem.session.len, rem.session.value, rem.is_orphan ? " orphan" : "",
+    rem.session.user_id );
 }
 
 void
 RvDataCallback::on_snapshot( Snap &snp ) noexcept
 {
-  printf( "snap %.*s reply %.*s refs %u flags %u\n",
+  printf( "snap %.*s reply %.*s refs %u,%u flags %u from %.*s %s\n",
     snp.sub.len, snp.sub.value, snp.reply_len, snp.reply, snp.sub.refcnt,
-    snp.flags );
+    snp.sub.ref7cnt, snp.flags, snp.session.len, snp.session.value,
+    snp.session.user_id );
+}
+
+void
+RvDataCallback::on_sass3( Sass3 &s3 ) noexcept
+{
+  printf( "sass3 %.*s reply %.*s refs %u,%u flags %x from "
+          "user=%s host=%s app=%s pid=%u\n",
+    s3.sub.len, s3.sub.value, s3.reply_len, s3.reply, s3.sub.refcnt,
+    s3.sub.ref7cnt, s3.flags,
+    s3.sass3.user_id, s3.sass3.host, s3.sass3.app, s3.sass3.pid );
 }
 
 /* when client connection stops */
@@ -220,6 +237,7 @@ main( int argc, const char *argv[] )
              * user    = get_arg( x, argc, argv, 1, "-u", "-user", "rv_subtop"),
              * log     = get_arg( x, argc, argv, 1, "-l", "-log", NULL ),
              * top     = get_arg( x, argc, argv, 0, "-t", "-top", NULL ),
+             * s3      = get_arg( x, argc, argv, 0, "-3", "-sass3", NULL ),
              * help    = get_arg( x, argc, argv, 0, "-h", "-help", 0 );
   int first_sub = x, idle_count = 0;
 
@@ -241,11 +259,12 @@ main( int argc, const char *argv[] )
   EvRvClientParameters parm( daemon, network, service, user, 0 );
   EvRvClient           conn( poll );
   RvDataCallback       data( poll, conn, &argv[ first_sub ], argc - first_sub,
-                             top != NULL );
+                             top != NULL, s3 == NULL, s3 != NULL );
   MDOutput             mout;
 
   if ( log != NULL ) {
-    mout.open( log, "w" );
+    if ( log[ 0 ] != '-' )
+      mout.open( log, "w" );
     data.sub_db.mout = &mout;
   }
   /* connect to daemon */

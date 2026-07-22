@@ -279,6 +279,18 @@ $(bind)/rv_pub$(exe): $(rv_pub_objs) $(rv_pub_libs) $(lnk_dep)
 all_exes    += $(bind)/rv_pub$(exe)
 all_depends += $(rv_pub_deps)
 
+replayrv_files := replayrv
+replayrv_cfile := $(addprefix test/, $(addsuffix .cpp, $(replayrv_files)))
+replayrv_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(replayrv_files)))
+replayrv_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(replayrv_files)))
+replayrv_libs  := $(sassrv_lib)
+replayrv_lnk   := $(sassrv_lib) $(lnk_lib)
+
+$(bind)/replayrv$(exe): $(replayrv_objs) $(replayrv_libs) $(lnk_dep)
+
+all_exes    += $(bind)/replayrv$(exe)
+all_depends += $(replayrv_deps)
+
 #tibco_home = $(shell if [ -d /usr/tibco/tibrv ] ; then echo /usr/tibco/tibrv ; \
 #                        elif [ -d /home/chris/tibco/tibrv ] ; then echo /home/chris/tibco/tibrv ; fi)
 #api_client_includes = -I$(tibco_home)/include
@@ -585,18 +597,18 @@ $(bind)/fanrv7test$(exe): $(fanrv7test_objs) $(fanrv7test_libs) $(lnk_dep)
 all_exes    += $(bind)/fanrv7test$(exe)
 all_depends += $(fanrv7test_deps)
 
-#rvfieldid_files := rvfieldid
-#rvfieldid_cfile := $(addprefix src/, $(addsuffix .cpp, $(rvfieldid_files)))
-#rvfieldid_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(rvfieldid_files)))
-#rvfieldid_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(rvfieldid_files)))
-#rvfieldid_libs  := $(sassrv_lib) $(libd)/librv7ftlib.a $(libd)/librv7lib.a
-#rvfieldid_lnk   := $(libd)/librv7ftlib.a $(libd)/librv7lib.a $(sassrv_lib) $(lnk_lib)
+#emptymsg_files := emptymsg
+#emptymsg_cfile := $(addprefix src/, $(addsuffix .cpp, $(emptymsg_files)))
+#emptymsg_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(emptymsg_files)))
+#emptymsg_deps  := $(addprefix $(dependd)/, $(addsuffix .d, $(emptymsg_files)))
+#emptymsg_libs  := $(sassrv_lib) $(libd)/librv7ftlib.a $(libd)/librv7lib.a
+#emptymsg_lnk   := $(libd)/librv7ftlib.a $(libd)/librv7lib.a $(sassrv_lib) $(lnk_lib)
 #
-#$(bind)/rvfieldid$(exe): $(rvfieldid_objs) $(rvfieldid_libs) $(lnk_dep)
+#$(bind)/emptymsg$(exe): $(emptymsg_objs) $(emptymsg_libs) $(lnk_dep)
 #
-#all_exes    += $(bind)/rvfieldid$(exe)
-#all_depends += $(rvfieldid_deps)
-#
+#all_exes    += $(bind)/emptymsg$(exe)
+#all_depends += $(emptymsg_deps)
+
 #processtransport_2_files := processtransport_2
 #processtransport_2_cfile := $(addprefix src/, $(addsuffix .cpp, $(processtransport_2_files)))
 #processtransport_2_objs  := $(addprefix $(objd)/, $(addsuffix .o, $(processtransport_2_files)))
@@ -695,6 +707,7 @@ CMakeLists.txt: .copr/Makefile
 	add_executable (rv_server $(rv_server_cfile))
 	add_executable (rv_client $(rv_client_cfile))
 	add_executable (rv_pub $(rv_pub_cfile))
+	add_executable (replayrv $(replayrv_cfile))
 	EOF
 
 .PHONY: dnf_depend

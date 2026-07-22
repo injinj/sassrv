@@ -40,428 +40,17 @@ StrOutput::printf( const char *fmt,  ... ) noexcept
   va_end( args );
   return n;
 }
-}
-
-extern "C" {
-
-tibrv_status
-tibrvMsg_Create( tibrvMsg * msg )
-{
-  *msg = new ( ::malloc( sizeof( api_Msg ) ) ) api_Msg( 0 );
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_CreateEx( tibrvMsg * msg,  tibrv_u32 /*initial*/ )
-{
-  return tibrvMsg_Create( msg );
-}
-
-tibrv_status
-tibrvMsg_Destroy( tibrvMsg msg )
-{
-  if ( msg != NULL && ((api_Msg *) msg)->owner == NULL )
-    delete (api_Msg *) msg;
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_Detach( tibrvMsg msg )
-{
-  api_Msg *m = (api_Msg *) msg;
-  MsgTether *t;
-  if ( msg != NULL && (t = m->owner) != NULL ) {
-    pthread_mutex_lock( &t->mutex );
-    m->owner->pop( m );
-    m->owner = NULL;
-    pthread_mutex_unlock( &t->mutex );
-  }
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_Reset( tibrvMsg msg )
-{
-  api_Msg * m = (api_Msg *) msg;
-  m->reset();
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_Expand( tibrvMsg /*msg*/,  tibrv_i32 /*add*/ )
-{
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_SetSendSubject( tibrvMsg msg,  const char * subject )
-{
-  api_Msg * m = (api_Msg *) msg;
-  m->subject_len = ( subject == NULL ? 0: ::strlen( subject ) );
-  m->subject = ( subject == NULL ? NULL :
-                 m->mem.stralloc( m->subject_len, subject ) );
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_GetSendSubject( tibrvMsg msg,  const char ** subject )
-{
-  api_Msg * m = (api_Msg *) msg;
-  *subject = m->subject;
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_SetReplySubject( tibrvMsg msg,  const char * reply )
-{
-  api_Msg * m = (api_Msg *) msg;
-  m->reply_len = ( reply == NULL ? 0 : ::strlen( reply ) );
-  m->reply = ( reply == NULL ? NULL : m->mem.stralloc( m->reply_len, reply ) );
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_GetReplySubject( tibrvMsg msg,  const char ** reply )
-{
-  api_Msg * m = (api_Msg *) msg;
-  if ( (*reply = m->reply) != NULL )
-    return TIBRV_OK;
-  return TIBRV_NOT_FOUND;
-}
-
-tibrv_status
-tibrvMsg_GetEvent( tibrvMsg msg,  tibrvEvent * id )
-{
-  *id = ((api_Msg *) msg)->event;
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_GetClosure( tibrvMsg msg,  void ** closure )
-{
-  *closure = (void *) ((api_Msg *) msg)->cl;
-  return TIBRV_OK;
-}
-
-static inline void *
-get_as_bytes( tibrvMsg msg, tibrv_u32 *size )
-{
-  api_Msg * m = (api_Msg *) msg;
-  tibrv_u32 z = m->wr.update_hdr();
-  if ( z == 8 ) {
-    if ( m->msg_enc == RVMSG_TYPE_ID && m->msg_len > 8 ) {
-      if ( size != NULL )
-        *size = m->msg_len;
-      return (void *) m->msg_data;
-    }
-  }
-  if ( size != NULL )
-    *size = z;
-  return m->wr.buf;
-}
-
-static inline RvMsg *
-get_as_rvmsg( tibrvMsg msg )
-{
-  RvMsg * rvmsg = ((api_Msg *) msg)->rvmsg;
-  if ( rvmsg == NULL ) {
-    tibrv_u32 sz;
-    void    * buf = get_as_bytes( msg, &sz );
-    rvmsg = RvMsg::unpack_rv( buf, 0, sz, 0, NULL, ((api_Msg *) msg)->mem );
-  }
-  return rvmsg;
-}
-
-tibrv_status
-tibrvMsg_GetNumFields( tibrvMsg msg,  tibrv_u32 * num_flds )
-{
-  RvMsg * rvmsg = get_as_rvmsg( msg );
-  MDFieldIter * iter;
-  tibrv_u32     i = 0;
-  if ( rvmsg != NULL && rvmsg->get_field_iter( iter ) == 0 ) {
-    if ( iter->first() == 0 )
-      for ( i = 1; iter->next() == 0; i++ )
-        ;
-  }
-  *num_flds = i;
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_GetByteSize( tibrvMsg msg,  tibrv_u32 * size )
-{
-  RvMsg * rvmsg = ((api_Msg *) msg)->rvmsg;
-  if ( rvmsg != NULL )
-    *size = rvmsg->msg_end - rvmsg->msg_off;
-  else
-    get_as_bytes( msg, size );
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_ConvertToString( tibrvMsg msg,  const char ** str )
-{
-  api_Msg * m = (api_Msg *) msg;
-  RvMsg * rvmsg = get_as_rvmsg( msg );
-  StrOutput tmp;
-  tmp.puts( "{" );
-  rvmsg->print( &tmp, 0, "%s=", NULL );
-  tmp.puts( "}" );
-  *str = m->mem.stralloc( tmp.out.count, tmp.out.ptr );
-
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_Print( tibrvMsg msg )
-{
-  RvMsg * rvmsg = get_as_rvmsg( msg );
-  MDOutput tmp;
-  tmp.puts( "{" );
-  rvmsg->print( &tmp, 0, "%s=", NULL );
-  tmp.puts( "}\n" );
-  tmp.flush();
-
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_AddField( tibrvMsg msg,  tibrvMsgField * field )
-{
-  switch ( field->type ) {
-    case TIBRVMSG_MSG        : return tibrvMsg_AddMsgEx( msg, field->name, field->data.msg, field->id );
-    case TIBRVMSG_DATETIME   : return tibrvMsg_AddDateTimeEx( msg, field->name, &field->data.date, field->id );
-    case TIBRVMSG_OPAQUE     : return tibrvMsg_AddOpaqueEx( msg, field->name, field->data.buf, field->size, field->id );
-    case TIBRVMSG_STRING     : return tibrvMsg_AddStringEx( msg, field->name, field->data.str, field->id );
-    case TIBRVMSG_BOOL       : return tibrvMsg_AddBoolEx( msg, field->name, field->data.boolean, field->id );
-    case TIBRVMSG_I8         : return tibrvMsg_AddI8Ex( msg, field->name, field->data.i8, field->id );
-    case TIBRVMSG_U8         : return tibrvMsg_AddU8Ex( msg, field->name, field->data.u8, field->id );
-    case TIBRVMSG_I16        : return tibrvMsg_AddI16Ex( msg, field->name, field->data.i16, field->id );
-    case TIBRVMSG_U16        : return tibrvMsg_AddU16Ex( msg, field->name, field->data.u16, field->id );
-    case TIBRVMSG_I32        : return tibrvMsg_AddI32Ex( msg, field->name, field->data.i32, field->id );
-    case TIBRVMSG_U32        : return tibrvMsg_AddU32Ex( msg, field->name, field->data.u32, field->id );
-    case TIBRVMSG_I64        : return tibrvMsg_AddI64Ex( msg, field->name, field->data.i64, field->id );
-    case TIBRVMSG_U64        : return tibrvMsg_AddU64Ex( msg, field->name, field->data.u64, field->id );
-    case TIBRVMSG_F32        : return tibrvMsg_AddF32Ex( msg, field->name, field->data.f32, field->id );
-    case TIBRVMSG_F64        : return tibrvMsg_AddF64Ex( msg, field->name, field->data.f64, field->id );
-    case TIBRVMSG_IPPORT16   : return tibrvMsg_AddIPPort16Ex( msg, field->name, field->data.ipport16, field->id );
-    case TIBRVMSG_IPADDR32   : return tibrvMsg_AddIPAddr32Ex( msg, field->name, field->data.ipaddr32, field->id );
-    case TIBRVMSG_ENCRYPTED  : return TIBRV_NOT_PERMITTED;
-    case TIBRVMSG_NONE       : return TIBRV_OK;
-    case TIBRVMSG_I8ARRAY    : return tibrvMsg_AddI8ArrayEx( msg, field->name, (tibrv_i8 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_U8ARRAY    : return tibrvMsg_AddU8ArrayEx( msg, field->name, (tibrv_u8 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_I16ARRAY   : return tibrvMsg_AddI16ArrayEx( msg, field->name, (tibrv_i16 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_U16ARRAY   : return tibrvMsg_AddU16ArrayEx( msg, field->name, (tibrv_u16 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_I32ARRAY   : return tibrvMsg_AddI32ArrayEx( msg, field->name, (tibrv_i32 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_U32ARRAY   : return tibrvMsg_AddU32ArrayEx( msg, field->name, (tibrv_u32 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_I64ARRAY   : return tibrvMsg_AddI64ArrayEx( msg, field->name, (tibrv_i64 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_U64ARRAY   : return tibrvMsg_AddU64ArrayEx( msg, field->name, (tibrv_u64 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_F32ARRAY   : return tibrvMsg_AddF32ArrayEx( msg, field->name, (tibrv_f32 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_F64ARRAY   : return tibrvMsg_AddF64ArrayEx( msg, field->name, (tibrv_f64 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_XML        : return tibrvMsg_AddXmlEx( msg, field->name, field->data.buf, field->size, field->id );
-    case TIBRVMSG_STRINGARRAY: return tibrvMsg_AddStringArrayEx( msg, field->name, (const char **) field->data.array, field->count, field->id );
-    case TIBRVMSG_MSGARRAY   : return tibrvMsg_AddMsgArrayEx( msg, field->name, (tibrvMsg *) field->data.array, field->count, field->id );
-    default                  : return TIBRV_NOT_PERMITTED;
-  }
-}
-
-tibrv_status
-tibrvMsg_UpdateField( tibrvMsg msg,  tibrvMsgField * field )
-{
-  switch ( field->type ) {
-    case TIBRVMSG_MSG        : return tibrvMsg_UpdateMsgEx( msg, field->name, field->data.msg, field->id );
-    case TIBRVMSG_DATETIME   : return tibrvMsg_UpdateDateTimeEx( msg, field->name, &field->data.date, field->id );
-    case TIBRVMSG_OPAQUE     : return tibrvMsg_UpdateOpaqueEx( msg, field->name, field->data.buf, field->size, field->id );
-    case TIBRVMSG_STRING     : return tibrvMsg_UpdateStringEx( msg, field->name, field->data.str, field->id );
-    case TIBRVMSG_BOOL       : return tibrvMsg_UpdateBoolEx( msg, field->name, field->data.boolean, field->id );
-    case TIBRVMSG_I8         : return tibrvMsg_UpdateI8Ex( msg, field->name, field->data.i8, field->id );
-    case TIBRVMSG_U8         : return tibrvMsg_UpdateU8Ex( msg, field->name, field->data.u8, field->id );
-    case TIBRVMSG_I16        : return tibrvMsg_UpdateI16Ex( msg, field->name, field->data.i16, field->id );
-    case TIBRVMSG_U16        : return tibrvMsg_UpdateU16Ex( msg, field->name, field->data.u16, field->id );
-    case TIBRVMSG_I32        : return tibrvMsg_UpdateI32Ex( msg, field->name, field->data.i32, field->id );
-    case TIBRVMSG_U32        : return tibrvMsg_UpdateU32Ex( msg, field->name, field->data.u32, field->id );
-    case TIBRVMSG_I64        : return tibrvMsg_UpdateI64Ex( msg, field->name, field->data.i64, field->id );
-    case TIBRVMSG_U64        : return tibrvMsg_UpdateU64Ex( msg, field->name, field->data.u64, field->id );
-    case TIBRVMSG_F32        : return tibrvMsg_UpdateF32Ex( msg, field->name, field->data.f32, field->id );
-    case TIBRVMSG_F64        : return tibrvMsg_UpdateF64Ex( msg, field->name, field->data.f64, field->id );
-    case TIBRVMSG_IPPORT16   : return tibrvMsg_UpdateIPPort16Ex( msg, field->name, field->data.ipport16, field->id );
-    case TIBRVMSG_IPADDR32   : return tibrvMsg_UpdateIPAddr32Ex( msg, field->name, field->data.ipaddr32, field->id );
-    case TIBRVMSG_ENCRYPTED  : return TIBRV_NOT_PERMITTED;
-    case TIBRVMSG_NONE       : return TIBRV_OK;
-    case TIBRVMSG_I8ARRAY    : return tibrvMsg_UpdateI8ArrayEx( msg, field->name, (tibrv_i8 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_U8ARRAY    : return tibrvMsg_UpdateU8ArrayEx( msg, field->name, (tibrv_u8 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_I16ARRAY   : return tibrvMsg_UpdateI16ArrayEx( msg, field->name, (tibrv_i16 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_U16ARRAY   : return tibrvMsg_UpdateU16ArrayEx( msg, field->name, (tibrv_u16 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_I32ARRAY   : return tibrvMsg_UpdateI32ArrayEx( msg, field->name, (tibrv_i32 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_U32ARRAY   : return tibrvMsg_UpdateU32ArrayEx( msg, field->name, (tibrv_u32 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_I64ARRAY   : return tibrvMsg_UpdateI64ArrayEx( msg, field->name, (tibrv_i64 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_U64ARRAY   : return tibrvMsg_UpdateU64ArrayEx( msg, field->name, (tibrv_u64 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_F32ARRAY   : return tibrvMsg_UpdateF32ArrayEx( msg, field->name, (tibrv_f32 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_F64ARRAY   : return tibrvMsg_UpdateF64ArrayEx( msg, field->name, (tibrv_f64 *) field->data.array, field->count, field->id );
-    case TIBRVMSG_XML        : return tibrvMsg_UpdateXmlEx( msg, field->name, field->data.buf, field->size, field->id );
-    case TIBRVMSG_STRINGARRAY: return tibrvMsg_UpdateStringArrayEx( msg, field->name, (const char **) field->data.array, field->count, field->id );
-    case TIBRVMSG_MSGARRAY   : return tibrvMsg_UpdateMsgArrayEx( msg, field->name, (tibrvMsg *) field->data.array, field->count, field->id );
-    default                  : return TIBRV_NOT_PERMITTED;
-  }
-}
-
-tibrv_status
-tibrvMsg_CreateFromBytes( tibrvMsg * msg,  const void * bytes )
-{
-  MDMsgMem      mem;
-  size_t        sz = get_u32<MD_BIG>( &((uint8_t *) bytes)[ 0 ] );
-  RvMsg       * m  = RvMsg::unpack_rv( (void *) bytes, 0, sz, 0, NULL, mem );
-  tibrv_status status = TIBRV_OK;
-  if ( m == NULL )
-    status = TIBRV_CORRUPT_MSG;
-  else
-    status = tibrvMsg_Create( msg );
-  if ( status != TIBRV_OK ) {
-    *msg = NULL;
-    return status;
-  }
-  tibrvMsg new_msg = * msg;
-  api_Msg & x = *(api_Msg *) new_msg;
-  x.wr.append_rvmsg( *m );
-  x.id_used = ~(uint64_t) 0;
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_GetAsBytes( tibrvMsg msg,   const void ** ptr )
-{
-  RvMsg * rvmsg = ((api_Msg *) msg)->rvmsg;
-  if ( rvmsg != NULL )
-    *ptr = &((uint8_t *) rvmsg->msg_buf)[ rvmsg->msg_off ];
-  else
-    *ptr = get_as_bytes( msg, NULL );
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_GetAsBytesCopy( tibrvMsg msg, void * ptr, tibrv_u32 size )
-{
-  RvMsg * rvmsg = ((api_Msg *) msg)->rvmsg;
-  const void * tmp;
-  tibrv_u32 tmp_size;
-  if ( rvmsg != NULL ) {
-    tmp = &((uint8_t *) rvmsg->msg_buf)[ rvmsg->msg_off ];
-    tmp_size = rvmsg->msg_end - rvmsg->msg_off;
-  }
-  else {
-    tmp = get_as_bytes( msg, &tmp_size );
-  }
-  if ( tmp_size > size )
-    return TIBRV_INVALID_ARG;
-  ::memcpy( ptr, tmp, tmp_size );
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_CreateCopy( const tibrvMsg msg,  tibrvMsg * copy )
-{
-  api_Msg * m  = (api_Msg *) msg,
-          * cp = new ( ::malloc( sizeof( api_Msg ) ) ) api_Msg( 0 );
-  if ( m->subject_len > 0 ) {
-    cp->subject_len = m->subject_len;
-    cp->subject     = cp->mem.stralloc( m->subject_len, m->subject );
-  }
-  if ( m->reply_len > 0 ) {
-    cp->reply_len = m->reply_len;
-    cp->reply     = cp->mem.stralloc( m->reply_len, m->reply );
-  }
-  if ( m->msg_enc == RVMSG_TYPE_ID ) {
-    cp->msg_enc  = RVMSG_TYPE_ID;
-    cp->msg_len  = m->msg_len;
-    cp->msg_data = cp->mem.memalloc( m->msg_len, m->msg_data );
-    cp->id_used  = ~(uint64_t) 0;
-  }
-  else if ( m->rvmsg != NULL ) {
-    cp->wr.append_rvmsg( *m->rvmsg );
-    cp->id_used = ~(uint64_t) 0;
-  }
-  else {
-    cp->wr.append_writer( m->wr );
-    cp->id_used = m->id_used;
-  }
-  *copy = cp;
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_MarkReferences( tibrvMsg msg )
-{
-  api_Msg     * m   = (api_Msg *) msg;
-  TibrvMsgRef * ref = new ( ::malloc( sizeof( TibrvMsgRef ) ) ) TibrvMsgRef();
-  ref->blk_ptr = m->mem.blk_ptr;
-  ref->mem_off = m->mem.mem_off;
-  ref->serial  = m->tether.serial;
-  m->refs.push_hd( ref );
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_ClearReferences( tibrvMsg msg )
-{
-  api_Msg * m = (api_Msg *) msg, * sub, * next;
-  pthread_mutex_lock( &m->tether.mutex );
-  if ( ! m->refs.is_empty() ) {
-    TibrvMsgRef * ref = m->refs.pop_hd();
-    for ( sub = m->tether.hd; sub != NULL; sub = next ) {
-      next = sub->next;
-      if ( sub->serial > ref->serial ) {
-        m->tether.pop( sub );
-        sub->owner = NULL;
-        delete sub;
-      }
-    }
-    m->mem.reset( ref->blk_ptr, ref->mem_off );
-    delete ref;
-  }
-  pthread_mutex_unlock( &m->tether.mutex );
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_GetCurrentTime( tibrvMsgDateTime * cur )
-{
-  struct timespec ts;
-  clock_gettime( CLOCK_REALTIME, &ts );
-  cur->sec  = ts.tv_sec;
-  cur->nsec = ts.tv_nsec - ( ts.tv_nsec % 1000 );
-  return TIBRV_OK;
-}
-
-tibrv_status
-tibrvMsg_GetCurrentTimeString( char * local,  char * gmt )
-{
-  const char *fmt = "%Y-%m-%d %H:%M:%S";
-  struct timespec ts;
-  struct tm tm;
-  clock_gettime( CLOCK_REALTIME, &ts );
-  if ( gmt != NULL ) {
-    gmtime_r( &ts.tv_sec, &tm );
-    strftime( gmt, TIBRVMSG_DATETIME_STRING_SIZE, fmt, &tm );
-    /*154,979,000 Z*/
-    char * p = &gmt[ ::strlen( gmt ) ],
-         * e = &gmt[ TIBRVMSG_DATETIME_STRING_SIZE ];
-    snprintf( p, e-p, "%luZ",
-              ( ts.tv_nsec - ( ts.tv_nsec % 1000 ) ) + 1000000000 );
-    *p = '.';
-  }
-  if ( local != NULL ) {
-    localtime_r( &ts.tv_sec, &tm );
-    strftime( local, TIBRVMSG_DATETIME_STRING_SIZE, fmt, &tm );
-  }
-  return TIBRV_OK;
-}
-}
-
-namespace {
 
 static inline RvMsgWriter &
 get_writer( tibrvMsg msg ) {
   api_Msg *m = ((api_Msg *) msg);
+  if ( m->rd_refs == m->wr_refs ) {
+    if ( m->rvmsg != NULL ) {
+      m->wr.reset();
+      m->wr.append_rvmsg( *m->rvmsg );
+      m->id_used = ~(uint64_t) 0;
+    }
+  }
   m->wr_refs++;
   return m->wr;
 }
@@ -475,7 +64,7 @@ get_reader( tibrvMsg msg )
     RvMsg * rvmsg = m->rvmsg;
     if ( rvmsg == NULL || updated ) {
       tibrv_u32 sz;
-      void    * buf = get_as_bytes( msg, &sz );
+      void * buf = m->get_as_bytes( &sz );
       rvmsg = RvMsg::unpack_rv( buf, 0, sz, 0, NULL, m->mem );
     }
     m->rd = new ( m->mem.make( sizeof( MDFieldReader ) ) )
@@ -483,6 +72,14 @@ get_reader( tibrvMsg msg )
     m->rd_refs = m->wr_refs;
   }
   return *m->rd;
+}
+
+static inline RvMsg &
+get_as_rvmsg( tibrvMsg msg )
+{
+  MDFieldReader & rd = get_reader( msg );
+  MDMsg &iter_msg = rd.iter->iter_msg();
+  return (RvMsg &) iter_msg;
 }
 
 static inline bool
@@ -683,16 +280,20 @@ get_msg_array( tibrvMsg msg,  MDFieldReader &rd,  tibrvMsg **array,  tibrv_u32 *
   if ( ! rd.get_array_count( cnt ) )
     return TIBRV_ARG_CONFLICT;
   if ( cnt > 0 ) {
-    MDMsgMem * mem = rd.iter->iter_msg().mem;
-    tibrvMsg * ar  = (tibrvMsg *) mem->make( cnt * sizeof( tibrvMsg * ) );
+    MDMsg    & x    = rd.iter->iter_msg();
+    MDMsgMem * mem  = x.mem;
+    MDDict   * dict = x.dict;
+    tibrvMsg * ar   = (tibrvMsg *) mem->make( cnt * sizeof( tibrvMsg * ) );
     for ( size_t i = 0; i < cnt; i++ ) {
-      api_Msg * m = ((api_Msg *) msg)->make_submsg();
+      api_Msg * smsg = ((api_Msg *) msg)->make_submsg();
       MDReference aref;
       if ( rd.iter->iter_msg().get_array_ref( rd.mref, i, aref ) == 0 ) {
-        m->msg_enc  = RVMSG_TYPE_ID;
-        m->msg_data = m->mem.memalloc( aref.fsize, aref.fptr );
-        m->msg_len  = aref.fsize;
-        ar[ i ] = m;
+        void * msg_buf = aref.fptr;
+        size_t msg_len = aref.fsize;
+        smsg->rvmsg = new ( smsg->mem.make( sizeof( RvMsg ) ) )
+          RvMsg( smsg->mem.memalloc( msg_len, msg_buf ), 0, msg_len, dict,
+                 smsg->mem );
+        ar[ i ] = smsg;
       }
       else {
         return TIBRV_ARG_CONFLICT;
@@ -829,6 +430,383 @@ struct UpdGeom {
   }
 };
 }
+
+extern "C" {
+
+tibrv_status
+tibrvMsg_Create( tibrvMsg * msg )
+{
+  *msg = new ( ::malloc( sizeof( api_Msg ) ) ) api_Msg( 0 );
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_CreateEx( tibrvMsg * msg,  tibrv_u32 /*initial*/ )
+{
+  return tibrvMsg_Create( msg );
+}
+
+tibrv_status
+tibrvMsg_Destroy( tibrvMsg msg )
+{
+  if ( msg != NULL && ((api_Msg *) msg)->owner == NULL )
+    delete (api_Msg *) msg;
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_Detach( tibrvMsg msg )
+{
+  api_Msg *m = (api_Msg *) msg;
+  MsgTether *t;
+  if ( msg != NULL && (t = m->owner) != NULL ) {
+    pthread_mutex_lock( &t->mutex );
+    m->owner->pop( m );
+    m->owner = NULL;
+    pthread_mutex_unlock( &t->mutex );
+  }
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_Reset( tibrvMsg msg )
+{
+  api_Msg * m = (api_Msg *) msg;
+  m->reset();
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_Expand( tibrvMsg /*msg*/,  tibrv_i32 /*add*/ )
+{
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_SetSendSubject( tibrvMsg msg,  const char * subject )
+{
+  api_Msg * m = (api_Msg *) msg;
+  m->subject_len = ( subject == NULL ? 0: ::strlen( subject ) );
+  m->subject = ( subject == NULL ? NULL :
+                 m->mem.stralloc( m->subject_len, subject ) );
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_GetSendSubject( tibrvMsg msg,  const char ** subject )
+{
+  api_Msg * m = (api_Msg *) msg;
+  *subject = m->subject;
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_SetReplySubject( tibrvMsg msg,  const char * reply )
+{
+  api_Msg * m = (api_Msg *) msg;
+  m->reply_len = ( reply == NULL ? 0 : ::strlen( reply ) );
+  m->reply = ( reply == NULL ? NULL : m->mem.stralloc( m->reply_len, reply ) );
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_GetReplySubject( tibrvMsg msg,  const char ** reply )
+{
+  api_Msg * m = (api_Msg *) msg;
+  if ( (*reply = m->reply) != NULL )
+    return TIBRV_OK;
+  return TIBRV_NOT_FOUND;
+}
+
+tibrv_status
+tibrvMsg_GetEvent( tibrvMsg msg,  tibrvEvent * id )
+{
+  *id = ((api_Msg *) msg)->event;
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_GetClosure( tibrvMsg msg,  void ** closure )
+{
+  *closure = (void *) ((api_Msg *) msg)->cl;
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_GetNumFields( tibrvMsg msg,  tibrv_u32 * num_flds )
+{
+  RvMsg & rvmsg = get_as_rvmsg( msg );
+  MDFieldIter * iter;
+  tibrv_u32     i = 0;
+  if ( rvmsg.get_field_iter( iter ) == 0 ) {
+    if ( iter->first() == 0 )
+      for ( i = 1; iter->next() == 0; i++ )
+        ;
+  }
+  *num_flds = i;
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_GetByteSize( tibrvMsg msg,  tibrv_u32 * size )
+{
+  RvMsg & rvmsg = get_as_rvmsg( msg );
+  *size = rvmsg.msg_end - rvmsg.msg_off;
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_ConvertToString( tibrvMsg msg,  const char ** str )
+{
+  RvMsg & rvmsg = get_as_rvmsg( msg );
+  StrOutput tmp;
+  tmp.puts( "{" );
+  rvmsg.print( &tmp, 0, "%s=", NULL );
+  tmp.puts( "}" );
+  *str = ((api_Msg *) msg)->mem.stralloc( tmp.out.count, tmp.out.ptr );
+
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_Print( tibrvMsg msg )
+{
+  RvMsg & rvmsg = get_as_rvmsg( msg );
+  MDOutput tmp;
+  tmp.puts( "{" );
+  rvmsg.print( &tmp, 0, "%s=", NULL );
+  tmp.puts( "}\n" );
+  tmp.flush();
+
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_AddField( tibrvMsg msg,  tibrvMsgField * field )
+{
+  switch ( field->type ) {
+    case TIBRVMSG_MSG        : return tibrvMsg_AddMsgEx( msg, field->name, field->data.msg, field->id );
+    case TIBRVMSG_DATETIME   : return tibrvMsg_AddDateTimeEx( msg, field->name, &field->data.date, field->id );
+    case TIBRVMSG_OPAQUE     : return tibrvMsg_AddOpaqueEx( msg, field->name, field->data.buf, field->size, field->id );
+    case TIBRVMSG_STRING     : return tibrvMsg_AddStringEx( msg, field->name, field->data.str, field->id );
+    case TIBRVMSG_BOOL       : return tibrvMsg_AddBoolEx( msg, field->name, field->data.boolean, field->id );
+    case TIBRVMSG_I8         : return tibrvMsg_AddI8Ex( msg, field->name, field->data.i8, field->id );
+    case TIBRVMSG_U8         : return tibrvMsg_AddU8Ex( msg, field->name, field->data.u8, field->id );
+    case TIBRVMSG_I16        : return tibrvMsg_AddI16Ex( msg, field->name, field->data.i16, field->id );
+    case TIBRVMSG_U16        : return tibrvMsg_AddU16Ex( msg, field->name, field->data.u16, field->id );
+    case TIBRVMSG_I32        : return tibrvMsg_AddI32Ex( msg, field->name, field->data.i32, field->id );
+    case TIBRVMSG_U32        : return tibrvMsg_AddU32Ex( msg, field->name, field->data.u32, field->id );
+    case TIBRVMSG_I64        : return tibrvMsg_AddI64Ex( msg, field->name, field->data.i64, field->id );
+    case TIBRVMSG_U64        : return tibrvMsg_AddU64Ex( msg, field->name, field->data.u64, field->id );
+    case TIBRVMSG_F32        : return tibrvMsg_AddF32Ex( msg, field->name, field->data.f32, field->id );
+    case TIBRVMSG_F64        : return tibrvMsg_AddF64Ex( msg, field->name, field->data.f64, field->id );
+    case TIBRVMSG_IPPORT16   : return tibrvMsg_AddIPPort16Ex( msg, field->name, field->data.ipport16, field->id );
+    case TIBRVMSG_IPADDR32   : return tibrvMsg_AddIPAddr32Ex( msg, field->name, field->data.ipaddr32, field->id );
+    case TIBRVMSG_ENCRYPTED  : return TIBRV_NOT_PERMITTED;
+    case TIBRVMSG_NONE       : return TIBRV_OK;
+    case TIBRVMSG_I8ARRAY    : return tibrvMsg_AddI8ArrayEx( msg, field->name, (tibrv_i8 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_U8ARRAY    : return tibrvMsg_AddU8ArrayEx( msg, field->name, (tibrv_u8 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_I16ARRAY   : return tibrvMsg_AddI16ArrayEx( msg, field->name, (tibrv_i16 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_U16ARRAY   : return tibrvMsg_AddU16ArrayEx( msg, field->name, (tibrv_u16 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_I32ARRAY   : return tibrvMsg_AddI32ArrayEx( msg, field->name, (tibrv_i32 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_U32ARRAY   : return tibrvMsg_AddU32ArrayEx( msg, field->name, (tibrv_u32 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_I64ARRAY   : return tibrvMsg_AddI64ArrayEx( msg, field->name, (tibrv_i64 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_U64ARRAY   : return tibrvMsg_AddU64ArrayEx( msg, field->name, (tibrv_u64 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_F32ARRAY   : return tibrvMsg_AddF32ArrayEx( msg, field->name, (tibrv_f32 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_F64ARRAY   : return tibrvMsg_AddF64ArrayEx( msg, field->name, (tibrv_f64 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_XML        : return tibrvMsg_AddXmlEx( msg, field->name, field->data.buf, field->size, field->id );
+    case TIBRVMSG_STRINGARRAY: return tibrvMsg_AddStringArrayEx( msg, field->name, (const char **) field->data.array, field->count, field->id );
+    case TIBRVMSG_MSGARRAY   : return tibrvMsg_AddMsgArrayEx( msg, field->name, (tibrvMsg *) field->data.array, field->count, field->id );
+    default                  : return TIBRV_NOT_PERMITTED;
+  }
+}
+
+tibrv_status
+tibrvMsg_UpdateField( tibrvMsg msg,  tibrvMsgField * field )
+{
+  switch ( field->type ) {
+    case TIBRVMSG_MSG        : return tibrvMsg_UpdateMsgEx( msg, field->name, field->data.msg, field->id );
+    case TIBRVMSG_DATETIME   : return tibrvMsg_UpdateDateTimeEx( msg, field->name, &field->data.date, field->id );
+    case TIBRVMSG_OPAQUE     : return tibrvMsg_UpdateOpaqueEx( msg, field->name, field->data.buf, field->size, field->id );
+    case TIBRVMSG_STRING     : return tibrvMsg_UpdateStringEx( msg, field->name, field->data.str, field->id );
+    case TIBRVMSG_BOOL       : return tibrvMsg_UpdateBoolEx( msg, field->name, field->data.boolean, field->id );
+    case TIBRVMSG_I8         : return tibrvMsg_UpdateI8Ex( msg, field->name, field->data.i8, field->id );
+    case TIBRVMSG_U8         : return tibrvMsg_UpdateU8Ex( msg, field->name, field->data.u8, field->id );
+    case TIBRVMSG_I16        : return tibrvMsg_UpdateI16Ex( msg, field->name, field->data.i16, field->id );
+    case TIBRVMSG_U16        : return tibrvMsg_UpdateU16Ex( msg, field->name, field->data.u16, field->id );
+    case TIBRVMSG_I32        : return tibrvMsg_UpdateI32Ex( msg, field->name, field->data.i32, field->id );
+    case TIBRVMSG_U32        : return tibrvMsg_UpdateU32Ex( msg, field->name, field->data.u32, field->id );
+    case TIBRVMSG_I64        : return tibrvMsg_UpdateI64Ex( msg, field->name, field->data.i64, field->id );
+    case TIBRVMSG_U64        : return tibrvMsg_UpdateU64Ex( msg, field->name, field->data.u64, field->id );
+    case TIBRVMSG_F32        : return tibrvMsg_UpdateF32Ex( msg, field->name, field->data.f32, field->id );
+    case TIBRVMSG_F64        : return tibrvMsg_UpdateF64Ex( msg, field->name, field->data.f64, field->id );
+    case TIBRVMSG_IPPORT16   : return tibrvMsg_UpdateIPPort16Ex( msg, field->name, field->data.ipport16, field->id );
+    case TIBRVMSG_IPADDR32   : return tibrvMsg_UpdateIPAddr32Ex( msg, field->name, field->data.ipaddr32, field->id );
+    case TIBRVMSG_ENCRYPTED  : return TIBRV_NOT_PERMITTED;
+    case TIBRVMSG_NONE       : return TIBRV_OK;
+    case TIBRVMSG_I8ARRAY    : return tibrvMsg_UpdateI8ArrayEx( msg, field->name, (tibrv_i8 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_U8ARRAY    : return tibrvMsg_UpdateU8ArrayEx( msg, field->name, (tibrv_u8 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_I16ARRAY   : return tibrvMsg_UpdateI16ArrayEx( msg, field->name, (tibrv_i16 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_U16ARRAY   : return tibrvMsg_UpdateU16ArrayEx( msg, field->name, (tibrv_u16 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_I32ARRAY   : return tibrvMsg_UpdateI32ArrayEx( msg, field->name, (tibrv_i32 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_U32ARRAY   : return tibrvMsg_UpdateU32ArrayEx( msg, field->name, (tibrv_u32 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_I64ARRAY   : return tibrvMsg_UpdateI64ArrayEx( msg, field->name, (tibrv_i64 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_U64ARRAY   : return tibrvMsg_UpdateU64ArrayEx( msg, field->name, (tibrv_u64 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_F32ARRAY   : return tibrvMsg_UpdateF32ArrayEx( msg, field->name, (tibrv_f32 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_F64ARRAY   : return tibrvMsg_UpdateF64ArrayEx( msg, field->name, (tibrv_f64 *) field->data.array, field->count, field->id );
+    case TIBRVMSG_XML        : return tibrvMsg_UpdateXmlEx( msg, field->name, field->data.buf, field->size, field->id );
+    case TIBRVMSG_STRINGARRAY: return tibrvMsg_UpdateStringArrayEx( msg, field->name, (const char **) field->data.array, field->count, field->id );
+    case TIBRVMSG_MSGARRAY   : return tibrvMsg_UpdateMsgArrayEx( msg, field->name, (tibrvMsg *) field->data.array, field->count, field->id );
+    default                  : return TIBRV_NOT_PERMITTED;
+  }
+}
+
+tibrv_status
+tibrvMsg_CreateFromBytes( tibrvMsg * msg,  const void * bytes )
+{
+  MDMsgMem      mem;
+  size_t        sz = get_u32<MD_BIG>( &((uint8_t *) bytes)[ 0 ] );
+  RvMsg       * m  = RvMsg::unpack_rv( (void *) bytes, 0, sz, 0, NULL, mem );
+  tibrv_status status = TIBRV_OK;
+  if ( m == NULL )
+    status = TIBRV_CORRUPT_MSG;
+  else
+    status = tibrvMsg_Create( msg );
+  if ( status != TIBRV_OK ) {
+    *msg = NULL;
+    return status;
+  }
+  tibrvMsg new_msg = * msg;
+  api_Msg & x = *(api_Msg *) new_msg;
+  x.wr.append_rvmsg( *m );
+  x.id_used = ~(uint64_t) 0;
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_GetAsBytes( tibrvMsg msg,  const void ** ptr )
+{
+  RvMsg * rvmsg = ((api_Msg *) msg)->rvmsg;
+  if ( rvmsg != NULL )
+    *ptr = &((uint8_t *) rvmsg->msg_buf)[ rvmsg->msg_off ];
+  else
+    *ptr = ((api_Msg *) msg)->get_as_bytes( NULL );
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_GetAsBytesCopy( tibrvMsg msg, void * ptr, tibrv_u32 size )
+{
+  RvMsg * rvmsg = ((api_Msg *) msg)->rvmsg;
+  const void * tmp;
+  tibrv_u32 tmp_size;
+  if ( rvmsg != NULL ) {
+    tmp = &((uint8_t *) rvmsg->msg_buf)[ rvmsg->msg_off ];
+    tmp_size = rvmsg->msg_end - rvmsg->msg_off;
+  }
+  else {
+    tmp = ((api_Msg *) msg)->get_as_bytes( &tmp_size );
+  }
+  if ( tmp_size > size )
+    return TIBRV_INVALID_ARG;
+  ::memcpy( ptr, tmp, tmp_size );
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_CreateCopy( const tibrvMsg msg,  tibrvMsg * copy )
+{
+  api_Msg * m  = (api_Msg *) msg,
+          * cp = new ( ::malloc( sizeof( api_Msg ) ) ) api_Msg( 0 );
+  if ( m->subject_len > 0 ) {
+    cp->subject_len = m->subject_len;
+    cp->subject     = cp->mem.stralloc( m->subject_len, m->subject );
+  }
+  if ( m->reply_len > 0 ) {
+    cp->reply_len = m->reply_len;
+    cp->reply     = cp->mem.stralloc( m->reply_len, m->reply );
+  }
+  if ( m->rvmsg != NULL ) {
+    cp->wr.append_rvmsg( *m->rvmsg );
+    cp->id_used = ~(uint64_t) 0;
+  }
+  else {
+    cp->wr.append_writer( m->wr );
+    cp->id_used = m->id_used;
+  }
+  *copy = cp;
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_MarkReferences( tibrvMsg msg )
+{
+  api_Msg     * m   = (api_Msg *) msg;
+  TibrvMsgRef * ref = new ( ::malloc( sizeof( TibrvMsgRef ) ) ) TibrvMsgRef();
+  ref->blk_ptr = m->mem.blk_ptr;
+  ref->mem_off = m->mem.mem_off;
+  ref->serial  = m->tether.serial;
+  m->refs.push_hd( ref );
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_ClearReferences( tibrvMsg msg )
+{
+  api_Msg * m = (api_Msg *) msg, * sub, * next;
+  pthread_mutex_lock( &m->tether.mutex );
+  if ( ! m->refs.is_empty() ) {
+    TibrvMsgRef * ref = m->refs.pop_hd();
+    for ( sub = m->tether.hd; sub != NULL; sub = next ) {
+      next = sub->next;
+      if ( sub->serial > ref->serial ) {
+        m->tether.pop( sub );
+        sub->owner = NULL;
+        delete sub;
+      }
+    }
+    m->mem.reset( ref->blk_ptr, ref->mem_off );
+    delete ref;
+  }
+  pthread_mutex_unlock( &m->tether.mutex );
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_GetCurrentTime( tibrvMsgDateTime * cur )
+{
+  struct timespec ts;
+  clock_gettime( CLOCK_REALTIME, &ts );
+  cur->sec  = ts.tv_sec;
+  cur->nsec = ts.tv_nsec - ( ts.tv_nsec % 1000 );
+  return TIBRV_OK;
+}
+
+tibrv_status
+tibrvMsg_GetCurrentTimeString( char * local,  char * gmt )
+{
+  const char *fmt = "%Y-%m-%d %H:%M:%S";
+  struct timespec ts;
+  struct tm tm;
+  clock_gettime( CLOCK_REALTIME, &ts );
+  if ( gmt != NULL ) {
+    gmtime_r( &ts.tv_sec, &tm );
+    strftime( gmt, TIBRVMSG_DATETIME_STRING_SIZE, fmt, &tm );
+    /*154,979,000 Z*/
+    char * p = &gmt[ ::strlen( gmt ) ],
+         * e = &gmt[ TIBRVMSG_DATETIME_STRING_SIZE ];
+    snprintf( p, e-p, "%luZ",
+              ( ts.tv_nsec - ( ts.tv_nsec % 1000 ) ) + 1000000000 );
+    *p = '.';
+  }
+  if ( local != NULL ) {
+    localtime_r( &ts.tv_sec, &tm );
+    strftime( local, TIBRVMSG_DATETIME_STRING_SIZE, fmt, &tm );
+  }
+  return TIBRV_OK;
+}
+}
+
 extern "C" {
 
 tibrv_status
