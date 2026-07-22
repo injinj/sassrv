@@ -1,3 +1,3 @@
-raikv_dep := 1.40
-raimd_dep := 1.30
+raikv_dep := 1.41
+raimd_dep := 1.31
 libdecnumber_dep := 3.62
